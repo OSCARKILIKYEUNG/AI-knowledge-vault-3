@@ -77,7 +77,7 @@ export default function ItemDetailPage() {
 
   const copyContent = async () => {
     if (item) {
-      await navigator.clipboard.writeText(item.raw_content);
+      await navigator.clipboard.writeText(item.raw_content || '');
       toast.success('內容已複製到剪貼簿');
     }
   };
