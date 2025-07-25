@@ -243,9 +243,6 @@ export default function DashboardPage() {
                           {item.type === 'prompt' ? '提示' : '連結'}
                         </Badge>
                       </div>
-                      {item.image_url && (
-                        <Image className="h-4 w-4 text-gray-400" />
-                      )}
                     </div>
                     <CardTitle className="text-lg leading-tight">
                       {truncateText(item.title || '', 60)}
