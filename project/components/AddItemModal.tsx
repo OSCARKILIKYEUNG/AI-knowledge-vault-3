@@ -128,7 +128,7 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
           raw_content: content.trim(),
           url: type === 'link' ? url.trim() : null,
           category: categories,
-          image_url: imageUrl,
+
         })
         .select()
         .single();
