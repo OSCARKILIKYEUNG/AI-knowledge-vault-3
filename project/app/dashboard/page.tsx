@@ -31,8 +31,6 @@ export default function DashboardPage() {
 
   useEffect(() => {
     checkUser();
-    
-    // Handle auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         if (event === 'SIGNED_IN' && session) {
@@ -42,7 +40,6 @@ export default function DashboardPage() {
         }
       }
     );
-
     return () => subscription.unsubscribe();
   }, []);
 
@@ -63,13 +60,10 @@ export default function DashboardPage() {
       return;
     }
     setUser(user);
-    
-    // Create user record if doesn't exist
     const { error } = await supabase
       .from('users')
       .upsert({ id: user.id, email: user.email! })
       .select();
-    
     if (error) {
       console.error('Error creating user:', error);
     }
@@ -85,8 +79,7 @@ export default function DashboardPage() {
       if (error) throw error;
 
       setItems(data || []);
-      
-      // Extract unique categories
+
       const allCategories = data?.flatMap(item => item.category || []) || [];
       const uniqueCategories = Array.from(new Set(allCategories));
       setCategories(uniqueCategories);
@@ -101,10 +94,11 @@ export default function DashboardPage() {
     let filtered = items;
 
     if (searchQuery) {
+      const q = searchQuery.toLowerCase();
       filtered = filtered.filter(item =>
-        item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.raw_content.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (item.summary && item.summary.toLowerCase().includes(searchQuery.toLowerCase()))
+        (item.title || '').toLowerCase().includes(q) ||
+        (item.raw_content || '').toLowerCase().includes(q) ||
+        (item.summary || '').toLowerCase().includes(q)
       );
     }
 
@@ -124,17 +118,15 @@ export default function DashboardPage() {
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
-
     try {
-      // Use AI-powered search via Netlify Functions
       const results = await searchItems(searchQuery, user.id);
       setFilteredItems(results);
     } catch (error) {
-      // Fallback to client-side filtering
+      const q = searchQuery.toLowerCase();
       const filtered = items.filter(item =>
-        item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.raw_content.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (item.summary && item.summary.toLowerCase().includes(searchQuery.toLowerCase()))
+        (item.title || '').toLowerCase().includes(q) ||
+        (item.raw_content || '').toLowerCase().includes(q) ||
+        (item.summary || '').toLowerCase().includes(q)
       );
       setFilteredItems(filtered);
     }
@@ -256,11 +248,11 @@ export default function DashboardPage() {
                       )}
                     </div>
                     <CardTitle className="text-lg leading-tight">
-                      {truncateText(item.title, 60)}
+                      {truncateText(item.title || '', 60)}
                     </CardTitle>
                     {item.summary && (
                       <CardDescription className="text-sm">
-                        {truncateText(item.summary, 100)}
+                        {truncateText(item.summary || '', 100)}
                       </CardDescription>
                     )}
                   </CardHeader>
