@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AddItemModal } from '@/components/AddItemModal';
-import { SearchIcon, Plus, LogOut, Brain, FileText, Link as LinkIcon, Image } from 'lucide-react';
+import { SearchIcon, Plus, LogOut, Brain, FileText, Link as LinkIcon } from 'lucide-react';
 import { formatDate, truncateText } from '@/lib/utils';
 import { toast } from 'sonner';
 import Link from 'next/link';
@@ -44,9 +44,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    if (user) {
-      fetchItems();
-    }
+    if (user) fetchItems();
   }, [user]);
 
   useEffect(() => {
@@ -64,9 +62,7 @@ export default function DashboardPage() {
       .from('users')
       .upsert({ id: user.id, email: user.email! })
       .select();
-    if (error) {
-      console.error('Error creating user:', error);
-    }
+    if (error) console.error('Error creating user:', error);
   };
 
   const fetchItems = async () => {
@@ -75,15 +71,11 @@ export default function DashboardPage() {
         .from('items')
         .select('*')
         .order('created_at', { ascending: false });
-
       if (error) throw error;
-
       setItems(data || []);
-
       const allCategories = data?.flatMap(item => item.category || []) || [];
-      const uniqueCategories = Array.from(new Set(allCategories));
-      setCategories(uniqueCategories);
-    } catch (error) {
+      setCategories(Array.from(new Set(allCategories)));
+    } catch {
       toast.error('載入項目失敗');
     } finally {
       setLoading(false);
@@ -92,7 +84,6 @@ export default function DashboardPage() {
 
   const filterItems = () => {
     let filtered = items;
-
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       filtered = filtered.filter(item =>
@@ -101,13 +92,9 @@ export default function DashboardPage() {
         (item.summary || '').toLowerCase().includes(q)
       );
     }
-
     if (selectedCategory) {
-      filtered = filtered.filter(item =>
-        item.category?.includes(selectedCategory)
-      );
+      filtered = filtered.filter(item => item.category?.includes(selectedCategory));
     }
-
     setFilteredItems(filtered);
   };
 
@@ -121,7 +108,7 @@ export default function DashboardPage() {
     try {
       const results = await searchItems(searchQuery, user.id);
       setFilteredItems(results);
-    } catch (error) {
+    } catch {
       const q = searchQuery.toLowerCase();
       const filtered = items.filter(item =>
         (item.title || '').toLowerCase().includes(q) ||
