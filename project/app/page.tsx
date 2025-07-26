@@ -1,56 +1,87 @@
 'use client';
 
-import { useEffect } from 'react';
-import Link from 'next/link';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
+import { Brain } from 'lucide-react';
 
-export default function HomePage() {
+export const dynamic = 'force-dynamic';
+
+export default function Home() {
   const router = useRouter();
+  const [debug, setDebug] = useState<string>('[Home] init');
+  const [sessionJson, setSessionJson] = useState<string>('(empty)');
+  const once = useRef(false);
 
   useEffect(() => {
-    let mounted = true;
+    if (once.current) return;
+    once.current = true;
 
-    (async () => {
+    const run = async () => {
       try {
-        const { data } = await supabase.auth.getUser();
-        if (!mounted) return;
-        // 若已登入，直接去 Dashboard（不阻塞畫面）
-        if (data?.user) router.replace('/dashboard');
-      } catch {
-        // 就算失敗也不要卡住首頁
-      }
-    })();
+        setDebug('[Home] calling supabase.auth.getSession() ...');
+        const { data, error } = await supabase.auth.getSession();
 
-    return () => { mounted = false; };
+        if (error) {
+          setDebug(`[Home] getSession ERROR: ${error.message} -> go /login`);
+          router.replace('/login');
+          // 後備：若 300ms 沒導到，就硬跳
+          setTimeout(() => { window.location.href = '/login'; }, 300);
+          return;
+        }
+
+        setSessionJson(JSON.stringify(data || {}, null, 2));
+
+        if (data?.session?.user) {
+          setDebug(`[Home] signed in as ${data.session.user.email} -> go /dashboard`);
+          router.replace('/dashboard');
+          // 後備：若 300ms 沒導到，就硬跳
+          setTimeout(() => { window.location.href = '/dashboard'; }, 300);
+        } else {
+          setDebug('[Home] no session -> go /login');
+          router.replace('/login');
+          setTimeout(() => { window.location.href = '/login'; }, 300);
+        }
+      } catch (e: any) {
+        setDebug(`[Home] exception: ${e?.message ?? String(e)} -> go /login`);
+        router.replace('/login');
+        setTimeout(() => { window.location.href = '/login'; }, 300);
+      }
+    };
+
+    run();
+
+    const t = setTimeout(() => {
+      setDebug((d) => `${d}  |  (Timeout 6s: still here)`);
+    }, 6000);
+
+    return () => clearTimeout(t);
   }, [router]);
 
-  // 立即顯示的簡單首頁（不會出現「載入中」）
   return (
-    <main className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
-      <div className="w-full max-w-md text-center space-y-6 bg-white border rounded p-8">
-        <h1 className="text-2xl font-bold">AI Knowledge Vault</h1>
-        <p className="text-gray-600">歡迎！請先登入或註冊使用。</p>
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+      <div className="max-w-2xl w-full text-center">
+        <Brain className="h-12 w-12 text-blue-600 animate-pulse mx-auto mb-4" />
+        <p className="text-gray-800 text-xl font-semibold mb-2">載入中…（偵錯版首頁）</p>
 
-        <div className="flex items-center justify-center gap-3">
-          <Link
-            href="/login"
-            className="inline-flex items-center justify-center rounded px-4 py-2 bg-black text-white"
-          >
-            登入 / 註冊
-          </Link>
-          <Link
-            href="/dashboard"
-            className="inline-flex items-center justify-center rounded px-4 py-2 border"
-          >
-            前往儀表板
-          </Link>
+        <div className="mt-3 p-4 rounded border bg-white text-left">
+          <div className="text-sm font-mono leading-relaxed whitespace-pre-wrap">
+            <strong>狀態：</strong>{debug}
+          </div>
+
+          <div className="mt-3">
+            <div className="text-xs text-gray-500 mb-1">getSession() 原始回傳：</div>
+            <pre className="text-xs bg-gray-100 p-3 rounded overflow-auto max-h-64">
+              {sessionJson}
+            </pre>
+          </div>
+
+          <div className="mt-4 flex items-center justify-center gap-3">
+            <a className="px-3 py-2 rounded border bg-gray-50 hover:bg-gray-100 text-sm" href="/login">直接前往 /login</a>
+            <a className="px-3 py-2 rounded border bg-gray-50 hover:bg-gray-100 text-sm" href="/dashboard">直接前往 /dashboard</a>
+          </div>
         </div>
-
-        <p className="text-xs text-gray-400">
-          已登入的使用者會自動跳轉到 Dashboard；未登入可點上方按鈕前往。
-        </p>
       </div>
-    </main>
+    </div>
   );
 }
