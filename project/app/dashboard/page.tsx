@@ -7,17 +7,32 @@ import { Database } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AddItemModal } from '@/components/AddItemModal';
-import { SearchIcon, Plus, LogOut, Brain, FileText, Link as LinkIcon } from 'lucide-react';
+import {
+  SearchIcon,
+  Plus,
+  LogOut,
+  Brain,
+  FileText,
+  Link as LinkIcon,
+} from 'lucide-react';
 import { formatDate, truncateText } from '@/lib/utils';
 import { toast } from 'sonner';
 import Link from 'next/link';
 import { searchItems } from '@/lib/api';
 
 type ItemRow = Database['public']['Tables']['items']['Row'];
-type ItemWithAssets = ItemRow & { prompt_assets?: { image_url: string | null }[] };
+type ItemWithAssets = ItemRow & {
+  prompt_assets?: { image_url: string | null }[];
+};
 
 export default function DashboardPage() {
   const [items, setItems] = useState<ItemWithAssets[]>([]);
@@ -33,8 +48,12 @@ export default function DashboardPage() {
   useEffect(() => {
     checkUser();
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' && session) setUser(session.user);
-      else if (event === 'SIGNED_OUT') router.push('/login');
+      if (event === 'SIGNED_IN' && session) {
+        setUser(session.user);
+        fetchItems();
+      } else if (event === 'SIGNED_OUT') {
+        router.push('/login');
+      }
     });
     return () => subscription.unsubscribe();
   }, []);
@@ -49,26 +68,20 @@ export default function DashboardPage() {
 
   const checkUser = async () => {
     const { data, error } = await supabase.auth.getUser();
-
-    if (error || !data.user) {
-      console.error('[錯誤] 未登入或無法取得 user：', error);
-      setLoading(false); // <== 防止永遠卡載入
+    if (error || !data?.user) {
       router.push('/login');
       return;
     }
-
     setUser(data.user);
-
-    // 非阻塞的 user upsert
-    supabase
-      .from('users')
-      .upsert({ id: data.user.id, email: data.user.email! })
-      .then(({ error }) => {
-        if (error) console.error('[錯誤] 建立 user 失敗：', error);
-      });
+    const { error: upsertError } = await supabase.from('users').upsert({
+      id: data.user.id,
+      email: data.user.email!,
+    });
+    if (upsertError) console.error('Error creating user:', upsertError);
   };
 
   const fetchItems = async () => {
+    setLoading(true);
     try {
       const { data, error } = await supabase
         .from('items')
@@ -76,13 +89,11 @@ export default function DashboardPage() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-
       setItems(data || []);
-      const allCategories = data?.flatMap(item => item.category || []) || [];
+      const allCategories = data?.flatMap((item) => item.category || []) || [];
       setCategories(Array.from(new Set(allCategories)));
-    } catch (err) {
+    } catch {
       toast.error('載入項目失敗');
-      console.error('[錯誤] fetchItems:', err);
     } finally {
       setLoading(false);
     }
@@ -90,20 +101,20 @@ export default function DashboardPage() {
 
   const filterItems = () => {
     let filtered = items;
-
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(item =>
-        (item.title || '').toLowerCase().includes(q) ||
-        (item.raw_content || '').toLowerCase().includes(q) ||
-        (item.summary || '').toLowerCase().includes(q)
+      filtered = filtered.filter(
+        (item) =>
+          (item.title || '').toLowerCase().includes(q) ||
+          (item.raw_content || '').toLowerCase().includes(q) ||
+          (item.summary || '').toLowerCase().includes(q)
       );
     }
-
     if (selectedCategory) {
-      filtered = filtered.filter(item => item.category?.includes(selectedCategory));
+      filtered = filtered.filter((item) =>
+        item.category?.includes(selectedCategory)
+      );
     }
-
     setFilteredItems(filtered);
   };
 
@@ -114,18 +125,18 @@ export default function DashboardPage() {
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
-
     try {
       const results = await searchItems(searchQuery, user.id);
       setFilteredItems(results);
     } catch {
       const q = searchQuery.toLowerCase();
-      const fallback = items.filter(item =>
-        (item.title || '').toLowerCase().includes(q) ||
-        (item.raw_content || '').toLowerCase().includes(q) ||
-        (item.summary || '').toLowerCase().includes(q)
+      const filtered = items.filter(
+        (item) =>
+          (item.title || '').toLowerCase().includes(q) ||
+          (item.raw_content || '').toLowerCase().includes(q) ||
+          (item.summary || '').toLowerCase().includes(q)
       );
-      setFilteredItems(fallback);
+      setFilteredItems(filtered);
     }
   };
 
@@ -146,11 +157,15 @@ export default function DashboardPage() {
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <Brain className="h-8 w-8 text-blue-600" />
-            <h1 className="text-2xl font-bold text-gray-900">AI Knowledge Vault</h1>
+            <h1 className="text-2xl font-bold text-gray-900">
+              AI Knowledge Vault
+            </h1>
           </div>
           <div className="flex items-center space-x-4">
             <Avatar>
-              <AvatarFallback>{user?.email?.[0]?.toUpperCase()}</AvatarFallback>
+              <AvatarFallback>
+                {user?.email?.[0]?.toUpperCase()}
+              </AvatarFallback>
             </Avatar>
             <Button variant="ghost" onClick={handleLogout}>
               <LogOut className="h-4 w-4 mr-2" />
@@ -169,7 +184,7 @@ export default function DashboardPage() {
                 placeholder="搜尋知識庫..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
                 className="pl-10"
               />
             </div>
@@ -192,7 +207,9 @@ export default function DashboardPage() {
               {categories.map((category) => (
                 <Button
                   key={category}
-                  variant={selectedCategory === category ? 'default' : 'outline'}
+                  variant={
+                    selectedCategory === category ? 'default' : 'outline'
+                  }
                   size="sm"
                   onClick={() => setSelectedCategory(category)}
                 >
@@ -210,7 +227,9 @@ export default function DashboardPage() {
               {items.length === 0 ? '開始建立您的知識庫' : '找不到相關項目'}
             </h3>
             <p className="text-gray-600 mb-4">
-              {items.length === 0 ? '新增您的第一個項目來開始使用 AI Knowledge Vault' : '嘗試不同的搜尋關鍵字或篩選條件'}
+              {items.length === 0
+                ? '新增您的第一個項目來開始使用 AI Knowledge Vault'
+                : '嘗試不同的搜尋關鍵字或篩選條件'}
             </p>
             {items.length === 0 && (
               <Button onClick={() => setShowAddModal(true)}>
@@ -225,6 +244,7 @@ export default function DashboardPage() {
               <Link key={item.id} href={`/items/${item.id}`}>
                 <Card className="h-full hover:shadow-lg transition-shadow cursor-pointer">
                   <CardHeader>
+                    {/* 顯示第一張圖片 */}
                     {item.prompt_assets?.[0]?.image_url && (
                       <div className="mb-3">
                         <img
@@ -234,6 +254,7 @@ export default function DashboardPage() {
                         />
                       </div>
                     )}
+
                     <div className="flex items-start justify-between">
                       <div className="flex items-center space-x-2">
                         {item.type === 'prompt' ? (
@@ -241,11 +262,16 @@ export default function DashboardPage() {
                         ) : (
                           <LinkIcon className="h-5 w-5 text-green-600" />
                         )}
-                        <Badge variant={item.type === 'prompt' ? 'default' : 'secondary'}>
+                        <Badge
+                          variant={
+                            item.type === 'prompt' ? 'default' : 'secondary'
+                          }
+                        >
                           {item.type === 'prompt' ? '提示' : '連結'}
                         </Badge>
                       </div>
                     </div>
+
                     <CardTitle className="text-lg leading-tight">
                       {truncateText(item.title || '', 60)}
                     </CardTitle>
@@ -255,12 +281,17 @@ export default function DashboardPage() {
                       </CardDescription>
                     )}
                   </CardHeader>
+
                   <CardContent>
                     <div className="space-y-3">
                       {item.category && item.category.length > 0 && (
                         <div className="flex flex-wrap gap-1">
                           {item.category.slice(0, 3).map((cat) => (
-                            <Badge key={cat} variant="outline" className="text-xs">
+                            <Badge
+                              key={cat}
+                              variant="outline"
+                              className="text-xs"
+                            >
                               {cat}
                             </Badge>
                           ))}
@@ -271,7 +302,9 @@ export default function DashboardPage() {
                           )}
                         </div>
                       )}
-                      <div className="text-xs text-gray-500">{formatDate(item.created_at)}</div>
+                      <div className="text-xs text-gray-500">
+                        {formatDate(item.created_at)}
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
