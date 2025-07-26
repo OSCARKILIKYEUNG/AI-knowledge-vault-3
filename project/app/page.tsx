@@ -67,10 +67,12 @@ export default function ItemPage() {
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-10 space-y-8">
+      {/* 標題與分類 */}
       <div>
         <h1 className="text-2xl font-bold mb-2">{item.title}</h1>
         <p className="text-gray-500 text-sm">{formatDate(item.created_at)}</p>
-        {item.category?.length > 0 && (
+
+        {Array.isArray(item.category) && item.category.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-2">
             {item.category.map((cat) => (
               <Badge key={cat} variant="outline">{cat}</Badge>
@@ -79,6 +81,7 @@ export default function ItemPage() {
         )}
       </div>
 
+      {/* 圖片展示 */}
       {images.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {images.map((img) => (
@@ -92,6 +95,7 @@ export default function ItemPage() {
         </div>
       )}
 
+      {/* 原始內容 */}
       <div>
         <h2 className="text-lg font-semibold mb-2">內容</h2>
         <p className="whitespace-pre-line text-gray-800">{item.raw_content}</p>
