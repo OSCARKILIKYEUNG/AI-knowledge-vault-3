@@ -11,11 +11,10 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AddItemModal } from '@/components/AddItemModal';
-import { Brain, FileText, Link as LinkIcon, LogOut, Plus, SearchIcon } from 'lucide-react';
+import { Brain, FileText, Link as LinkIcon, LogOut, Plus, SearchIcon, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
 
-// ========== 型別（避免因資料庫型別差異導致 TS 編譯錯誤） ==========
 type ItemWithAssets = {
   id: number;
   user_id: string;
@@ -41,7 +40,9 @@ export default function DashboardPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
+
   const [summarizingId, setSummarizingId] = useState<number | null>(null);
+  const [aiSearching, setAiSearching] = useState(false);
 
   const booted = useRef(false);
 
@@ -56,7 +57,6 @@ export default function DashboardPage() {
         return;
       }
       setUser(user);
-      // 確保 users 表有紀錄（失敗不阻擋流程）
       await supabase.from('users').upsert({ id: user.id, email: user.email ?? '' }).select();
 
       await fetchItems();
@@ -70,21 +70,16 @@ export default function DashboardPage() {
     return () => subscription.unsubscribe();
   }, [router]);
 
-  // 依據 items / 搜尋字 / 類別 進行前端篩選（標題關鍵字）
+  // 即時：只用標題過濾；類別篩選
   useEffect(() => {
     let list = [...items];
-
-    // 1) 只搜尋「標題」包含關鍵字
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase();
-      list = list.filter(it => (it.title ?? '').toLowerCase().includes(q));
+      list = list.filter((it) => (it.title ?? '').toLowerCase().includes(q));
     }
-
-    // 2) 類別篩選
     if (selectedCategory) {
-      list = list.filter(it => it.category?.includes(selectedCategory));
+      list = list.filter((it) => it.category?.includes(selectedCategory));
     }
-
     setFilteredItems(list);
   }, [items, searchQuery, selectedCategory]);
 
@@ -96,15 +91,11 @@ export default function DashboardPage() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
+      const rows = (data ?? []) as ItemWithAssets[];
+      setItems(rows);
 
-      const rows = (data ?? []) as any[];
-      setItems(rows as ItemWithAssets[]);
-
-      // 產生所有類別清單
       const cats = new Set<string>();
-      rows.forEach((r) => {
-        (r.category ?? []).forEach((c: string) => cats.add(c));
-      });
+      rows.forEach((r) => (r.category ?? []).forEach((c) => cats.add(c)));
       setCategories(Array.from(cats));
     } catch (e) {
       console.error(e);
@@ -117,20 +108,18 @@ export default function DashboardPage() {
     router.push('/');
   }
 
-  // 30 字「提示」— 強制重算，伺服器會同時讀圖片 URL
+  // 產生 / 重算 30 字提示（會納入最新圖片）
   async function makeTip(itemId: number) {
     try {
       setSummarizingId(itemId);
       const res = await fetch('/api/ai-tip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ itemId, force: true }), // ★ 重要：force 重算
+        body: JSON.stringify({ itemId }),
       });
       const json = await res.json();
-      if (!res.ok || !json.ok) {
-        throw new Error(json.error || '提示失敗');
-      }
-      await fetchItems(); // 取回最新 summary_tip
+      if (!res.ok || !json.ok) throw new Error(json.error || '提示失敗');
+      await fetchItems();
       toast.success('已產生最新提示');
     } catch (e: any) {
       toast.error(e?.message ?? '提示失敗');
@@ -139,7 +128,49 @@ export default function DashboardPage() {
     }
   }
 
-  // 取內容前 N 個字（中文/英文都可），避免 null
+  // AI 提示搜尋（僅 summary_tip）
+  async function runAISearch() {
+    const q = searchQuery.trim();
+    if (!q) {
+      toast.error('請先輸入要搜尋的關鍵字');
+      return;
+    }
+    if (!user?.id) {
+      toast.error('尚未登入');
+      return;
+    }
+    try {
+      setAiSearching(true);
+      const res = await fetch('/api/ai-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q, userId: user.id }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        toast.error(json?.error || 'AI 提示搜尋失敗');
+        setFilteredItems([]);
+        return;
+      }
+      const ids: number[] = Array.isArray(json?.ids) ? json.ids : [];
+      if (ids.length === 0) {
+        setFilteredItems([]);
+        toast.message('沒有匹配的提示');
+        return;
+      }
+      const map = new Map<number, ItemWithAssets>();
+      items.forEach((it) => map.set(it.id, it));
+      const ordered = ids.map((id) => map.get(id)).filter(Boolean) as ItemWithAssets[];
+      setFilteredItems(ordered);
+      toast.success(`提示搜尋完成，共 ${ordered.length} 筆`);
+    } catch (e) {
+      console.error(e);
+      toast.error('AI 提示搜尋發生錯誤');
+    } finally {
+      setAiSearching(false);
+    }
+  }
+
   function snippet(text: string | null, n = 20) {
     const t = (text ?? '').trim();
     if (!t) return '';
@@ -181,24 +212,26 @@ export default function DashboardPage() {
       <div className="container mx-auto px-4 py-8">
         {/* Search & Actions */}
         <div className="mb-8 space-y-4">
-          <div className="flex gap-4">
-            <div className="flex-1 relative">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center">
+            <div className="relative flex-1">
               <SearchIcon className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
               <Input
-                placeholder="只搜尋標題中的關鍵字…"
+                placeholder="標題關鍵字（即時過濾）"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && /*即時靠前端過濾*/ null}
                 className="pl-10"
               />
             </div>
-            <Button onClick={() => {/* 目前即時過濾，不需實作 */}}>
-              搜尋
-            </Button>
-            <Button onClick={() => setShowAddModal(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              新增項目
-            </Button>
+            <div className="flex gap-2">
+              <Button onClick={runAISearch} disabled={aiSearching}>
+                <Sparkles className="h-4 w-4 mr-1" />
+                {aiSearching ? '提示搜尋中…' : 'AI 提示搜尋（僅 summary_tip）'}
+              </Button>
+              <Button onClick={() => setShowAddModal(true)}>
+                <Plus className="h-4 w-4 mr-2" />
+                新增項目
+              </Button>
+            </div>
           </div>
 
           {/* Category Filters */}
@@ -233,7 +266,7 @@ export default function DashboardPage() {
               {items.length === 0 ? '開始建立您的知識庫' : '找不到相關項目'}
             </h3>
             <p className="text-gray-600 mb-4">
-              {items.length === 0 ? '新增您的第一個項目來開始使用 AI Knowledge Vault' : '嘗試不同的搜尋關鍵字或篩選條件'}
+              {items.length === 0 ? '新增您的第一個項目來開始使用 AI Knowledge Vault' : '嘗試不同關鍵字或用 AI 提示搜尋'}
             </p>
             {items.length === 0 && (
               <Button onClick={() => setShowAddModal(true)}>
@@ -248,7 +281,7 @@ export default function DashboardPage() {
               <Link key={item.id} href={`/items/${item.id}`}>
                 <Card className="h-full hover:shadow-lg transition-shadow cursor-pointer">
                   <CardHeader>
-                    {/* 首張圖片縮圖 */}
+                    {/* 首張圖片 */}
                     {item.prompt_assets?.[0]?.image_url && (
                       <div className="mb-3">
                         <img
@@ -272,7 +305,7 @@ export default function DashboardPage() {
                         </Badge>
                       </div>
 
-                      {/* AI 提示按鈕（阻止 Link 跳頁） */}
+                      {/* 產生/重算 提示（阻止 Link 跳頁） */}
                       <Button
                         variant="outline"
                         size="sm"
@@ -291,27 +324,24 @@ export default function DashboardPage() {
                       {item.title || '（無標題）'}
                     </CardTitle>
 
-                    {/* 顯示內容前 20 字 */}
+                    {/* 內容前 20 字 */}
                     {(item.raw_content ?? '').trim() && (
                       <CardDescription className="text-sm" title={item.raw_content ?? ''}>
                         {snippet(item.raw_content, 20)}
                       </CardDescription>
                     )}
 
-                    {/* 30 字內 AI 提示（摘要） */}
+                    {/* 30 字內 AI 提示 */}
                     {(item.summary_tip ?? '').trim() && (
-                      <CardDescription
-                        className="text-sm text-blue-700"
-                        title={item.summary_tip ?? ''}
-                      >
+                      <CardDescription className="text-sm text-blue-700" title={item.summary_tip ?? ''}>
                         {item.summary_tip}
                       </CardDescription>
                     )}
 
-                    {/* 若也有較長的 AI 摘要，可節錄顯示 */}
+                    {/* 長摘要（若有） */}
                     {(item.summary ?? '').trim() && (
                       <CardDescription className="text-sm" title={item.summary ?? ''}>
-                        {(item.summary as string).length > 100
+                        {((item.summary as string).length > 100)
                           ? `${(item.summary as string).slice(0, 100)}…`
                           : (item.summary as string)}
                       </CardDescription>
@@ -344,7 +374,6 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* 新增項目 Modal */}
       <AddItemModal
         open={showAddModal}
         onOpenChange={setShowAddModal}
