@@ -15,7 +15,7 @@ function tokenize(q: string): string[] {
     .map((s) => s.trim())
     .filter(Boolean);
 }
-
+ 
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
