@@ -1,37 +1,29 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
-import type { Database } from '@/lib/supabaseClient';
-
+import { Database } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Brain, ArrowLeft, Copy, Trash2, Edit3, Save, X, Upload } from 'lucide-react';
+import { Brain, ArrowLeft, Copy, Trash2, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
+import { formatDate } from '@/lib/utils';
 
 type Item = Database['public']['Tables']['items']['Row'];
-type Asset = { id?: number; image_url: string | null };
+type Asset = { image_url: string | null };
 
 export default function ItemDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const idStr = (params?.id as string) ?? '';
-  const itemId = Number(idStr);
+  const idParam = params?.id;
+  const itemId = typeof idParam === 'string' ? parseInt(idParam, 10) : NaN;
 
-  const [loading, setLoading] = useState(true);
   const [item, setItem] = useState<Item | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [edit, setEdit] = useState(false);
-
-  // 編輯用狀態
-  const [title, setTitle] = useState('');
-  const [rawContent, setRawContent] = useState('');
-  const [categoryInput, setCategoryInput] = useState('');
-  const [moreFiles, setMoreFiles] = useState<FileList | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!itemId || Number.isNaN(itemId)) {
@@ -39,18 +31,16 @@ export default function ItemDetailPage() {
       router.replace('/dashboard');
       return;
     }
-    fetchData();
+    fetchItem(itemId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [itemId]);
 
-  const fetchData = async () => {
+  const fetchItem = async (id: number) => {
     try {
-      setLoading(true);
-      // 一次帶出 assets
       const { data, error } = await supabase
         .from('items')
-        .select('*, prompt_assets(image_url)')
-        .eq('id', itemId)
+        .select('*')
+        .eq('id', id)
         .single();
 
       if (error || !data) {
@@ -58,14 +48,14 @@ export default function ItemDetailPage() {
         router.replace('/dashboard');
         return;
       }
+      setItem(data);
 
-      setItem(data as Item);
-      setAssets(((data as any).prompt_assets ?? []) as Asset[]);
+      const { data: assetData, error: assetError } = await supabase
+        .from('prompt_assets')
+        .select('image_url')
+        .eq('item_id', id);
 
-      // 填入編輯欄位
-      setTitle(data.title ?? '');
-      setRawContent(data.raw_content ?? '');
-      setCategoryInput((data.category ?? []).join(', '));
+      if (!assetError) setAssets(assetData || []);
     } catch (e) {
       console.error(e);
       toast.error('載入失敗');
@@ -75,95 +65,79 @@ export default function ItemDetailPage() {
     }
   };
 
-  const categories = useMemo(
-    () => (item?.category ?? [] as string[]),
-    [item]
-  );
-
   const copyContent = async () => {
-    await navigator.clipboard.writeText(item?.raw_content ?? '');
-    toast.success('內容已複製到剪貼簿');
-  };
-
-  const copySummary = async () => {
-    const s = item?.summary ?? '';
-    if (!s) return;
-    await navigator.clipboard.writeText(s);
-    toast.success('摘要已複製到剪貼簿');
-  };
-
-  const handleDelete = async () => {
-    if (!item) return;
-    if (!confirm('確定要刪除此項目？')) return;
-
-    const { error } = await supabase.from('items').delete().eq('id', item.id);
-    if (error) {
-      console.error(error);
-      toast.error('刪除失敗');
-    } else {
-      toast.success('已刪除');
-      router.replace('/dashboard');
+    if (item) {
+      await navigator.clipboard.writeText(item.raw_content || '');
+      toast.success('內容已複製到剪貼簿');
     }
   };
 
-  const saveEdit = async () => {
+  const copySummary = async () => {
+    if (item?.summary) {
+      await navigator.clipboard.writeText(item.summary);
+      toast.success('摘要已複製到剪貼簿');
+    }
+  };
+
+  /** 從 public URL 擷取 storage 的物件 path */
+  const getPathFromPublicUrl = (url: string) => {
+    // 典型：https://<project>.supabase.co/storage/v1/object/public/prompt-images/<path>
+    const marker = '/prompt-images/';
+    const i = url.indexOf(marker);
+    if (i >= 0) return url.slice(i + marker.length);
+    // 後備：切 object/public/
+    const alt = '/object/public/';
+    const j = url.indexOf(alt);
+    return j >= 0 ? url.slice(j + alt.length).replace(/^prompt-images\//, '') : url;
+  };
+
+  /** 刪除：先刪 Storage 檔案 → 刪 prompt_assets → 刪 item */
+  const handleDelete = async () => {
     if (!item) return;
+    const ok = confirm('確定要刪除此項目？此操作會一併刪除相關圖片。');
+    if (!ok) return;
+
     try {
-      const cats = categoryInput
-        .split(',')
-        .map((c) => c.trim())
-        .filter(Boolean);
+      // 重新讀一次 assets，確保是最新
+      const { data: a } = await supabase
+        .from('prompt_assets')
+        .select('image_url')
+        .eq('item_id', item.id);
 
-      const { error } = await supabase
-        .from('items')
-        .update({
-          title: title || null,
-          raw_content: rawContent || null,
-          category: cats.length ? cats : null,
-        })
-        .eq('id', item.id);
+      const list = (a || assets || []).filter(x => x.image_url).map(x => getPathFromPublicUrl(x.image_url!));
 
-      if (error) throw error;
-
-      // 追加上傳圖片
-      if (moreFiles && moreFiles.length > 0) {
-        const { data: auth } = await supabase.auth.getUser();
-        const uid = auth?.user?.id;
-        if (uid) {
-          for (const file of Array.from(moreFiles)) {
-            if (!file.type.startsWith('image/')) {
-              toast.error(`僅支援圖片：${file.name}`);
-              continue;
-            }
-            const path = `${uid}/${item.id}-${Date.now()}-${file.name}`;
-            const { error: upErr } = await supabase
-              .storage
-              .from('prompt-images')
-              .upload(path, file, { cacheControl: '3600', upsert: false });
-            if (upErr) {
-              console.error(upErr);
-              toast.error(`圖片上傳失敗：${file.name}`);
-              continue;
-            }
-            const { data: pub } = supabase.storage.from('prompt-images').getPublicUrl(path);
-            const publicUrl = pub?.publicUrl ?? null;
-            if (publicUrl) {
-              const { error: assetErr } = await supabase
-                .from('prompt_assets')
-                .insert({ item_id: item.id, image_url: publicUrl });
-              if (assetErr) console.error(assetErr);
-            }
-          }
+      // 1) 先刪 Storage 檔案（若有）
+      if (list.length > 0) {
+        const { error: rmErr } = await supabase.storage.from('prompt-images').remove(list);
+        if (rmErr) {
+          console.error('Storage remove error:', rmErr);
+          // 通常是權限或路徑不對，但不阻擋後續 DB 刪除；可視需要在此 return。
         }
       }
 
-      toast.success('已儲存');
-      setEdit(false);
-      setMoreFiles(null);
-      await fetchData();
+      // 2) 刪 prompt_assets（若你已設 ON DELETE CASCADE，可略過這步）
+      const { error: delAssetsErr } = await supabase
+        .from('prompt_assets')
+        .delete()
+        .eq('item_id', item.id);
+      if (delAssetsErr) {
+        // 若用了 CASCADE，這裡可能被 RLS 擋住也沒關係，繼續嘗試刪 items
+        console.warn('Delete prompt_assets error (可忽略若有 CASCADE):', delAssetsErr);
+      }
+
+      // 3) 刪 item
+      const { error: delItemErr } = await supabase.from('items').delete().eq('id', item.id);
+      if (delItemErr) {
+        console.error(delItemErr);
+        toast.error('刪除失敗（items）');
+        return;
+      }
+
+      toast.success('已刪除');
+      router.replace('/dashboard');
     } catch (e) {
       console.error(e);
-      toast.error('儲存失敗');
+      toast.error('刪除過程發生錯誤');
     }
   };
 
@@ -184,31 +158,28 @@ export default function ItemDetailPage() {
     <div className="min-h-screen bg-gray-50">
       <div className="container mx-auto px-4 py-6">
         <div className="mb-6 flex items-center justify-between">
-          <Button variant="outline" onClick={() => router.push('/dashboard')} className="gap-2">
-            <ArrowLeft className="h-4 w-4" />
-            返回
-          </Button>
-
+          <div className="flex items-center gap-4">
+            <Button variant="outline" asChild>
+              <Link href="/dashboard">
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                返回
+              </Link>
+            </Button>
+            <h1 className="text-2xl font-bold">項目詳情</h1>
+          </div>
           <div className="flex gap-2">
-            {!edit ? (
-              <Button variant="outline" onClick={() => setEdit(true)} className="gap-2">
-                <Edit3 className="h-4 w-4" />
-                編輯
+            <Button variant="outline" onClick={copyContent}>
+              <Copy className="h-4 w-4 mr-2" />
+              複製內容
+            </Button>
+            {item.summary && (
+              <Button variant="outline" onClick={copySummary}>
+                <Copy className="h-4 w-4 mr-2" />
+                複製摘要
               </Button>
-            ) : (
-              <>
-                <Button onClick={saveEdit} className="gap-2">
-                  <Save className="h-4 w-4" />
-                  儲存
-                </Button>
-                <Button variant="outline" onClick={() => setEdit(false)} className="gap-2">
-                  <X className="h-4 w-4" />
-                  取消
-                </Button>
-              </>
             )}
-            <Button variant="destructive" onClick={handleDelete} className="gap-2">
-              <Trash2 className="h-4 w-4" />
+            <Button variant="destructive" onClick={handleDelete}>
+              <Trash2 className="h-4 w-4 mr-2" />
               刪除
             </Button>
           </div>
@@ -220,107 +191,64 @@ export default function ItemDetailPage() {
               <Badge variant={item.type === 'prompt' ? 'default' : 'secondary'}>
                 {item.type === 'prompt' ? '提示' : '連結'}
               </Badge>
-              {categories.length > 0 && (
+              {item.category && item.category.length > 0 && (
                 <div className="flex flex-wrap gap-1">
-                  {categories.map((c) => (
-                    <Badge key={c} variant="outline" className="text-xs">{c}</Badge>
+                  {item.category.map(cat => (
+                    <Badge key={cat} variant="outline" className="text-xs">
+                      {cat}
+                    </Badge>
                   ))}
                 </div>
               )}
             </div>
-            <CardTitle className="text-xl">
-              {item.title ?? '（無標題）'}
-            </CardTitle>
-            <p className="text-sm text-gray-500 mt-1">
-              建立於：{new Date(item.created_at).toLocaleString()}
-            </p>
+            <CardTitle className="text-xl">{item.title || '（無標題）'}</CardTitle>
+            <p className="text-sm text-gray-500 mt-1">建立於：{formatDate(item.created_at)}</p>
           </CardHeader>
 
           <CardContent className="space-y-6">
-            {!edit ? (
-              <>
-                {item.url && (
-                  <div className="text-sm">
-                    <span className="font-medium mr-2">原始連結：</span>
-                    <a className="text-blue-600 break-all underline" href={item.url} target="_blank" rel="noreferrer">
-                      {item.url}
-                    </a>
-                  </div>
-                )}
-
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className="font-medium">內容</h3>
-                    <Button size="sm" variant="outline" onClick={async () => {
-                      await navigator.clipboard.writeText(item.raw_content ?? '');
-                      toast.success('內容已複製');
-                    }} className="gap-2">
-                      <Copy className="h-4 w-4" />
-                      複製
-                    </Button>
-                  </div>
-                  <pre className="whitespace-pre-wrap bg-gray-100 p-3 rounded text-sm">
-                    {item.raw_content || '（無內容）'}
-                  </pre>
-                </div>
-
-                {item.summary && (
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="font-medium">AI 摘要</h3>
-                      <Button size="sm" variant="outline" onClick={copySummary} className="gap-2">
-                        <Copy className="h-4 w-4" />
-                        複製摘要
-                      </Button>
-                    </div>
-                    <p className="bg-blue-50 p-3 rounded text-sm leading-relaxed">{item.summary}</p>
-                  </div>
-                )}
-              </>
-            ) : (
-              <>
-                <div className="space-y-2">
-                  <label className="text-sm">標題</label>
-                  <Input value={title} onChange={(e) => setTitle(e.target.value)} />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm">內容</label>
-                  <Textarea rows={6} value={rawContent} onChange={(e) => setRawContent(e.target.value)} />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm">分類（逗號分隔）</label>
-                  <Input
-                    value={categoryInput}
-                    onChange={(e) => setCategoryInput(e.target.value)}
-                    placeholder="例如：設計, 產品, 策略"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm flex items-center gap-2">
-                    <Upload className="h-4 w-4" /> 追加上傳圖片（可多選）
-                  </label>
-                  <Input type="file" accept="image/*" multiple onChange={(e) => setMoreFiles(e.target.files)} />
-                </div>
-              </>
+            {item.url && (
+              <div>
+                <h3 className="font-medium mb-2">原始連結</h3>
+                <a
+                  href={item.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 inline-flex items-center gap-1 hover:underline break-all"
+                >
+                  {item.url}
+                  <ExternalLink className="h-4 w-4" />
+                </a>
+              </div>
             )}
 
-            {/* 圖片牆 */}
+            <div>
+              <h3 className="font-medium mb-2">內容</h3>
+              <pre className="whitespace-pre-wrap bg-gray-100 p-3 rounded text-sm">
+                {item.raw_content || '（無內容）'}
+              </pre>
+            </div>
+
+            {item.summary && (
+              <div>
+                <h3 className="font-medium mb-2">AI 摘要</h3>
+                <p className="bg-blue-50 p-3 rounded text-sm leading-relaxed">
+                  {item.summary}
+                </p>
+              </div>
+            )}
+
             {assets.length > 0 && (
               <div>
                 <h3 className="font-medium mb-2">圖片</h3>
                 <div className="grid gap-4 md:grid-cols-2">
                   {assets
-                    .filter((a) => a.image_url)
+                    .filter(a => a.image_url)
                     .map((a, i) => (
-                      <div key={`${i}-${a.image_url}`} className="border rounded p-2 bg-white">
+                      <div key={i} className="border rounded p-2 bg-white">
                         <img
                           src={a.image_url as string}
-                          alt="asset"
+                          alt="prompt asset"
                           className="rounded max-h-64 w-full object-contain"
-                          loading="lazy"
                         />
                       </div>
                     ))}
