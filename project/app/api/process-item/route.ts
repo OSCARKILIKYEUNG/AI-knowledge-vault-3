@@ -6,21 +6,23 @@ const serviceKey    = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const openrouterKey = process.env.OPENROUTER_API_KEY!;
 
 const admin = createClient(supabaseUrl, serviceKey);
-
 export const dynamic = 'force-dynamic';
 
-// 依序嘗試這些 embedding 模型（OpenRouter）
+// 依序嘗試（大小寫與斜線要正確）
 const EMBEDDING_CANDIDATES = [
-  'voyage/voyage-3-lite',          // 1536 維，快速、泛用
-  'snowflake/arctic-embed-l-v2.0',  // 1024 維，多語
-  'nomic-ai/nomic-embed-text-v1.5', // 768 維，多語
-  'jinaai/jina-embeddings-v3',      // 多語
-  'cohere/embed-multilingual-v3.0', // 有些金鑰不可用
+  'google/text-embedding-004',       // Google 官方 embedding（多語佳，常可用）
+  'voyage/voyage-3-lite',            // Voyage 多語向量（常可用）
+  'nomic-ai/nomic-embed-text-v1.5',  // Nomic 向量
+  'jinaai/jina-embeddings-v3',       // Jina 多語
+  'snowflake/arctic-embed-l-v2.0',   // Snowflake Arctic 向量
 ];
 
-async function getEmbeddingByOpenRouter(input: string): Promise<number[]> {
+async function getEmbeddingByOpenRouter(input: string) {
   let lastErr = '';
+  const tried: string[] = [];
+
   for (const model of EMBEDDING_CANDIDATES) {
+    tried.push(model);
     try {
       const r = await fetch('https://openrouter.ai/api/v1/embeddings', {
         method: 'POST',
@@ -39,12 +41,15 @@ async function getEmbeddingByOpenRouter(input: string): Promise<number[]> {
         j?.data?.[0]?.embedding ||
         j?.data?.[0]?.embedding_float ||
         [];
-      if (Array.isArray(vec) && vec.length > 0) return vec;
+      if (Array.isArray(vec) && vec.length > 0) {
+        return { embedding: vec, model, tried };
+      }
     } catch (e: any) {
       lastErr = e?.message ?? String(e);
     }
   }
-  throw new Error(`All models failed. last=${lastErr}`);
+
+  throw new Error(`All models failed. tried=${tried.join(', ')} last=${lastErr}`);
 }
 
 export async function POST(req: Request) {
@@ -55,7 +60,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: 'missing itemId' }, { status: 400 });
     }
 
-    // 取 item
     const { data: item, error } = await admin
       .from('items')
       .select('id, title, raw_content, url, category')
@@ -66,7 +70,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: 'item_not_found' }, { status: 404 });
     }
 
-    // 準備要嵌入的文字
     const embedText = [
       item.title || '',
       item.raw_content || '',
@@ -79,10 +82,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, message: 'empty_content' });
     }
 
-    // 產生向量（多模型備援）
-    const embedding = await getEmbeddingByOpenRouter(embedText);
+    const { embedding, model, tried } = await getEmbeddingByOpenRouter(embedText);
 
-    // 存回 DB（建議 items.embedding 型別為 float8[]）
     const { error: upErr } = await admin
       .from('items')
       .update({ embedding })
@@ -92,7 +93,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: upErr.message }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true, dim: embedding.length });
+    return NextResponse.json({ ok: true, dim: embedding.length, model, tried });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? 'unknown_error' }, { status: 500 });
   }
