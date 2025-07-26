@@ -17,51 +17,63 @@ import Link from 'next/link';
 import { searchItems } from '@/lib/api';
 
 type ItemRow = Database['public']['Tables']['items']['Row'];
-type PromptAsset = { image_url: string | null };
-type ItemWithAssets = ItemRow & { prompt_assets?: PromptAsset[] };
+type ItemWithAssets = ItemRow & { prompt_assets?: { image_url: string | null }[] };
 
 export default function DashboardPage() {
   const [items, setItems] = useState<ItemWithAssets[]>([]);
   const [filteredItems, setFilteredItems] = useState<ItemWithAssets[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [categories, setCategories] = useState<string[]>([]);
   const [user, setUser] = useState<any>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
-    (async () => {
-      const { data: { user }, error } = await supabase.auth.getUser();
-      if (error || !user) {
+    checkUser();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_IN' && session) setUser(session.user);
+      else if (event === 'SIGNED_OUT') router.push('/login');
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (user) fetchItems();
+  }, [user]);
+
+  useEffect(() => {
+    filterItems();
+  }, [items, searchQuery, selectedCategory]);
+
+  const checkUser = async () => {
+    try {
+      const { data, error } = await supabase.auth.getUser();
+      if (error || !data?.user) {
         router.push('/login');
         setLoading(false);
         return;
       }
-      setUser(user);
-      await supabase.from('users').upsert({ id: user.id, email: user.email! }).select();
-    })()
-    .catch(() => {})
-    .finally(() => setLoading(false));
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' && session) {
-        setUser(session.user);
-      } else if (event === 'SIGNED_OUT') {
-        router.push('/login');
+      setUser(data.user);
+
+      const { error: upsertError } = await supabase
+        .from('users')
+        .upsert({ id: data.user.id, email: data.user.email! })
+        .select();
+
+      if (upsertError) {
+        console.error('Error creating user:', upsertError);
       }
-    });
-    return () => subscription.unsubscribe();
-  }, [router]);
-
-  useEffect(() => {
-    if (user) {
-      fetchItems();
+    } catch (err) {
+      console.error('Unexpected error checking user:', err);
+    } finally {
+      setLoading(false);
     }
-  }, [user]);
+  };
 
   const fetchItems = async () => {
-    setLoading(true);
     try {
       const { data, error } = await supabase
         .from('items')
@@ -69,24 +81,28 @@ export default function DashboardPage() {
         .order('created_at', { ascending: false });
       if (error) throw error;
       setItems(data || []);
-      const cats = data?.flatMap(item => item.category || []) || [];
-      setCategories(Array.from(new Set(cats)));
+      const allCategories = data?.flatMap(item => item.category || []) || [];
+      setCategories(Array.from(new Set(allCategories)));
     } catch {
       toast.error('載入項目失敗');
-    } finally {
-      setLoading(false);
     }
   };
 
-  useEffect(() => {
-    const q = searchQuery.toLowerCase();
-    const filtered = items.filter(item =>
-      (item.title || '').toLowerCase().includes(q) ||
-      (item.raw_content || '').toLowerCase().includes(q) ||
-      (item.summary || '').toLowerCase().includes(q)
-    );
+  const filterItems = () => {
+    let filtered = items;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      filtered = filtered.filter(item =>
+        (item.title || '').toLowerCase().includes(q) ||
+        (item.raw_content || '').toLowerCase().includes(q) ||
+        (item.summary || '').toLowerCase().includes(q)
+      );
+    }
+    if (selectedCategory) {
+      filtered = filtered.filter(item => item.category?.includes(selectedCategory));
+    }
     setFilteredItems(filtered);
-  }, [items, searchQuery]);
+  };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -99,7 +115,13 @@ export default function DashboardPage() {
       const results = await searchItems(searchQuery, user.id);
       setFilteredItems(results);
     } catch {
-      setFilteredItems(items);
+      const q = searchQuery.toLowerCase();
+      const filtered = items.filter(item =>
+        (item.title || '').toLowerCase().includes(q) ||
+        (item.raw_content || '').toLowerCase().includes(q) ||
+        (item.summary || '').toLowerCase().includes(q)
+      );
+      setFilteredItems(filtered);
     }
   };
 
@@ -143,7 +165,7 @@ export default function DashboardPage() {
                 placeholder="搜尋知識庫..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
                 className="pl-10"
               />
             </div>
@@ -153,12 +175,24 @@ export default function DashboardPage() {
               新增項目
             </Button>
           </div>
+
           {categories.length > 0 && (
             <div className="flex flex-wrap gap-2">
-              <Button variant={selectedCategory === '' ? 'default' : 'outline'} size="sm" onClick={() => setSelectedCategory('')}>全部</Button>
-              {categories.map(cat => (
-                <Button key={cat} variant={selectedCategory === cat ? 'default' : 'outline'} size="sm" onClick={() => setSelectedCategory(cat)}>
-                  {cat}
+              <Button
+                variant={selectedCategory === '' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setSelectedCategory('')}
+              >
+                全部
+              </Button>
+              {categories.map((category) => (
+                <Button
+                  key={category}
+                  variant={selectedCategory === category ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setSelectedCategory(category)}
+                >
+                  {category}
                 </Button>
               ))}
             </div>
@@ -183,14 +217,14 @@ export default function DashboardPage() {
           </div>
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {filteredItems.map(item => (
+            {filteredItems.map((item) => (
               <Link key={item.id} href={`/items/${item.id}`}>
                 <Card className="h-full hover:shadow-lg transition-shadow cursor-pointer">
                   <CardHeader>
                     {item.prompt_assets?.[0]?.image_url && (
                       <div className="mb-3">
                         <img
-                          src={item.prompt_assets[0].image_url!}
+                          src={item.prompt_assets[0].image_url}
                           alt="預覽圖"
                           className="w-full h-40 object-cover rounded-md"
                         />
@@ -208,18 +242,28 @@ export default function DashboardPage() {
                         </Badge>
                       </div>
                     </div>
-                    <CardTitle className="text-lg leading-tight">{truncateText(item.title || '', 60)}</CardTitle>
-                    {item.summary && <CardDescription className="text-sm">{truncateText(item.summary || '', 100)}</CardDescription>}
+                    <CardTitle className="text-lg leading-tight">
+                      {truncateText(item.title || '', 60)}
+                    </CardTitle>
+                    {item.summary && (
+                      <CardDescription className="text-sm">
+                        {truncateText(item.summary || '', 100)}
+                      </CardDescription>
+                    )}
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-3">
                       {item.category && item.category.length > 0 && (
                         <div className="flex flex-wrap gap-1">
-                          {item.category.slice(0, 3).map(cat => (
-                            <Badge key={cat} variant="outline" className="text-xs">{cat}</Badge>
+                          {item.category.slice(0, 3).map((cat) => (
+                            <Badge key={cat} variant="outline" className="text-xs">
+                              {cat}
+                            </Badge>
                           ))}
                           {item.category.length > 3 && (
-                            <Badge variant="outline" className="text-xs">+{item.category.length - 3}</Badge>
+                            <Badge variant="outline" className="text-xs">
+                              +{item.category.length - 3}
+                            </Badge>
                           )}
                         </div>
                       )}
