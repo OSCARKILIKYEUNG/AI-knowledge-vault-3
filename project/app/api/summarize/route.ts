@@ -2,28 +2,28 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-export const dynamic = 'force-dynamic';
-
-// 必須在環境變數設定：
-// NEXT_PUBLIC_SUPABASE_URL
-// SUPABASE_SERVICE_ROLE_KEY
-// OPENROUTER_API_KEY
+// === Env ===
+// NEXT_PUBLIC_SUPABASE_URL        你的 Supabase URL
+// SUPABASE_SERVICE_ROLE_KEY       Supabase Service Role Key（只在 Server 用）
+// OPENROUTER_API_KEY              OpenRouter API Key
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const openrouterKey = process.env.OPENROUTER_API_KEY!;
 
-// 伺服器端管理用（可略過 RLS）
+// 用 Service Role，才能在伺服器端繞過 RLS 寫回 summary_tip
 const supabaseAdmin = createClient(supabaseUrl, serviceKey);
 
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const itemId = Number(body?.itemId);
+    const rawId = body?.itemId;
+    const itemId = Number(rawId);
+
     if (!itemId || Number.isNaN(itemId)) {
       return NextResponse.json({ ok: false, error: 'missing itemId' }, { status: 400 });
     }
 
-    // 讀取 item + 圖片
+    // 取 item + 圖片 URL（最多 3 張用來摘要）
     const { data: item, error } = await supabaseAdmin
       .from('items')
       .select('id, title, raw_content, url, category, summary, prompt_assets(image_url)')
@@ -35,36 +35,39 @@ export async function POST(req: Request) {
     }
 
     const images: string[] =
-      // @ts-ignore - 關聯回來的 prompt_assets
-      (item?.prompt_assets || []).map((a: any) => a?.image_url).filter(Boolean).slice(0, 3);
+      (item as any)?.prompt_assets?.map((a: any) => a?.image_url).filter(Boolean).slice(0, 3) ?? [];
 
-    // 準備提示（30字內；涵蓋標題/內容/圖片/連結）
-    const sysPrompt =
-      '你是中文助理，輸出繁體中文、30 字內的極簡摘要，需概括標題與內容重點，若有圖片或連結可簡短提及，不要贅字與標點裝飾。';
+    // === 準備訊息（OpenAI 相容格式，支援多模態） ===
+    const systemText =
+      '你是中文助理，輸出繁體中文，請用「30 字內」寫出極簡摘要；要概括標題與內容重點，如有圖片或連結請簡短提及。不要贅字、不要列表。';
 
-    const userPromptLines = [
+    const baseTextParts = [
       item.title ? `標題：${item.title}` : '',
-      item.raw_content ? `內容：${String(item.raw_content).slice(0, 600)}` : '',
+      item.raw_content ? `內容：${(item.raw_content || '').slice(0, 1200)}` : '',
       item.url ? `連結：${item.url}` : '',
       images.length ? `圖片數：${images.length}` : '',
     ].filter(Boolean);
 
-    const userPrompt = userPromptLines.join('\n');
+    // user.content 以「文字 + image_url」陣列提供給 gpt-4o
+    const userContent: any[] = [{ type: 'text', text: baseTextParts.join('\n') }];
+    for (const url of images) {
+      userContent.push({ type: 'image_url', image_url: { url } });
+    }
 
-    // 呼叫 OpenRouter（Gemini 2.5 Pro）
+    // === 呼叫 OpenRouter（gpt-4o） ===
     const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${openrouterKey}`,
+        'Authorization': `Bearer ${openrouterKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.5-pro',
+        model: 'openai/gpt-4o',
         messages: [
-          { role: 'system', content: sysPrompt },
-          { role: 'user', content: userPrompt },
+          { role: 'system', content: systemText },
+          { role: 'user', content: userContent },
         ],
-        max_tokens: 80,
+        max_tokens: 80,       // 控制在 30 字附近
         temperature: 0.3,
       }),
     });
@@ -76,23 +79,24 @@ export async function POST(req: Request) {
 
     const data = await resp.json();
 
-    // 兼容多種回傳格式
-    const rawContent =
-      data?.choices?.[0]?.message?.content ??
-      data?.choices?.[0]?.text ??
-      '';
-
+    // 解析回傳（可能是 string 或 content-array）
     let tip = '';
-    if (typeof rawContent === 'string') {
-      tip = rawContent.trim();
-    } else if (Array.isArray(rawContent)) {
-      // e.g. [{type:'text', text:'...'}, ...]
-      tip = rawContent.map((p: any) => (typeof p === 'string' ? p : p?.text || '')).join('').trim();
-    } else if (rawContent && typeof rawContent === 'object' && 'text' in rawContent) {
-      tip = String((rawContent as any).text || '').trim();
+    const msg = data?.choices?.[0]?.message;
+
+    if (typeof msg?.content === 'string') {
+      tip = msg.content;
+    } else if (Array.isArray(msg?.content)) {
+      // 部分模型會回傳 content: [{type:'text', text:'...'}, ...]
+      tip =
+        msg.content
+          .map((c: any) => (typeof c?.text === 'string' ? c.text : ''))
+          .filter(Boolean)
+          .join(' ')
+          .trim() || '';
     }
 
-    // 保險裁切（中文約 30 字，這裡取 60 個字元避免怪切）
+    tip = (tip || '').trim();
+    // 安全截斷（中文 30 字大概 ~60 code units）
     if (tip.length > 60) tip = tip.slice(0, 60);
 
     // 寫回 DB
@@ -102,10 +106,7 @@ export async function POST(req: Request) {
       .eq('id', itemId);
 
     if (upErr) {
-      return NextResponse.json(
-        { ok: false, error: `db_update_failed: ${upErr.message}` },
-        { status: 500 },
-      );
+      return NextResponse.json({ ok: false, error: `db_update_failed: ${upErr.message}` }, { status: 500 });
     }
 
     return NextResponse.json({ ok: true, tip });
@@ -113,3 +114,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: e?.message ?? 'unknown_error' }, { status: 500 });
   }
 }
+
+// 避免被 Next.js 當作靜態資源快取
+export const dynamic = 'force-dynamic';
