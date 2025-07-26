@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
@@ -16,11 +16,9 @@ import { formatDate, truncateText } from '@/lib/utils';
 import { toast } from 'sonner';
 import { searchItems } from '@/lib/api';
 
-// ---- 型別 ----
 type ItemRow = Database['public']['Tables']['items']['Row'];
 type ItemWithAssets = ItemRow & { prompt_assets?: { image_url: string | null }[] };
 
-// 強制動態（避免首頁或快取造成的狀態殘留）
 export const dynamic = 'force-dynamic';
 
 export default function DashboardPage() {
@@ -34,12 +32,11 @@ export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
   const [showAddModal, setShowAddModal] = useState(false);
 
-  // 用來暫存每張卡片的 AI 簡介： { [itemId]: summary }
+  // 卡片上的 AI 簡介暫存
   const [aiSummaries, setAiSummaries] = useState<Record<number, string>>({});
-  // 正在請求中的 item id（用來切換按鈕 loading）
   const [summarizingId, setSummarizingId] = useState<number | null>(null);
 
-  // ===== Auth 狀態 =====
+  // ==== Auth ====
   useEffect(() => {
     checkUser();
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -64,11 +61,10 @@ export default function DashboardPage() {
       return;
     }
     setUser(user);
-    // 確保 users 表有紀錄
     await supabase.from('users').upsert({ id: user.id, email: user.email! }).select();
   };
 
-  // ===== 取資料 =====
+  // ==== Data ====
   const fetchItems = async () => {
     try {
       const { data, error } = await supabase
@@ -78,10 +74,12 @@ export default function DashboardPage() {
 
       if (error) throw error;
 
-      setItems((data as ItemWithAssets[]) || []);
-      // 取全部分類
-      const allCategories = (data || []).flatMap((it: ItemWithAssets) => it.category || []);
-      setCategories(Array.from(new Set(allCategories)));
+      const list = (data as ItemWithAssets[]) || [];
+      setItems(list);
+
+      // 全部類別（去重）
+      const all = list.flatMap((it) => it.category || []);
+      setCategories(Array.from(new Set(all)));
     } catch (e) {
       console.error(e);
       toast.error('載入項目失敗');
@@ -128,44 +126,35 @@ export default function DashboardPage() {
     }
   };
 
-  // ===== 連接 /api/summarize 的按鈕處理 =====
+  // ==== 提示（呼叫 /api/summarize，帶入圖片） ====
   const handleSummarize = async (item: ItemWithAssets, e?: React.MouseEvent) => {
-    // 不要觸發 Link 導航
     e?.preventDefault();
     e?.stopPropagation();
 
-    if (!item) return;
-
-    // 準備要丟給 API 的資料
     const title = item.title || '';
-    const descSource =
-      item.summary ||
-      item.raw_content ||
-      item.url ||
-      ''; // 任一內容來源，避免空字串
+    const desc = item.summary || item.raw_content || item.url || '';
+    const imageUrls = (item.prompt_assets || [])
+      .map(a => a.image_url)
+      .filter(Boolean) as string[]; // 取前2張由 API 控制
 
     setSummarizingId(item.id as number);
     try {
       const res = await fetch('/api/summarize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, description: descSource }),
+        body: JSON.stringify({ title, description: desc, images: imageUrls }),
       });
-
       if (!res.ok) {
         const txt = await res.text();
-        throw new Error(`Summarize API 失敗：${res.status} ${txt}`);
+        throw new Error(txt);
       }
-
       const data = await res.json();
-      // 後端已限制 30 字內；再保險截斷一下
       const brief: string = (data.summary || '').slice(0, 30);
-
-      setAiSummaries((prev) => ({ ...prev, [item.id as number]: brief }));
+      setAiSummaries(prev => ({ ...prev, [item.id as number]: brief }));
       toast.success('已產生提示');
     } catch (err: any) {
       console.error(err);
-      toast.error('AI 提示失敗，請稍後再試');
+      toast.error('AI 提示失敗');
     } finally {
       setSummarizingId(null);
     }
@@ -286,7 +275,6 @@ export default function DashboardPage() {
                         </div>
                       )}
 
-                      {/* 卡片頂部：類型 + 提示按鈕 */}
                       <div className="flex items-start justify-between">
                         <div className="flex items-center space-x-2">
                           {item.type === 'prompt' ? (
@@ -311,7 +299,7 @@ export default function DashboardPage() {
                         </Button>
                       </div>
 
-                      {/* AI 30字摘要（有就顯示在標題上方） */}
+                      {/* 顯示 AI 30字摘要 */}
                       {brief && (
                         <CardDescription className="mt-2 text-[13px] text-blue-700">
                           {brief}
@@ -333,16 +321,12 @@ export default function DashboardPage() {
                       <div className="space-y-3">
                         {item.category && item.category.length > 0 && (
                           <div className="flex flex-wrap gap-1">
-                            {item.category.slice(0, 3).map((cat) => (
+                            {/* 顯示全部分類（不再 slice 只顯示 3 個） */}
+                            {item.category.map((cat) => (
                               <Badge key={cat} variant="outline" className="text-xs">
                                 {cat}
                               </Badge>
                             ))}
-                            {item.category.length > 3 && (
-                              <Badge variant="outline" className="text-xs">
-                                +{item.category.length - 3}
-                              </Badge>
-                            )}
                           </div>
                         )}
                         <div className="text-xs text-gray-500">{formatDate(item.created_at)}</div>
