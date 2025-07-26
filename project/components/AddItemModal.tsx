@@ -2,318 +2,167 @@
 
 import { useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Badge } from '@/components/ui/badge';
-import { Upload, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { generateSummary, generateEmbedding } from '@/lib/api';
 
 interface AddItemModalProps {
   open: boolean;
-  onOpenChange: (open: boolean) => void;
+  onOpenChange: (v: boolean) => void;
   onItemAdded: () => void;
 }
 
 export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalProps) {
   const [type, setType] = useState<'prompt' | 'link'>('prompt');
   const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
+  const [rawContent, setRawContent] = useState('');
   const [url, setUrl] = useState('');
   const [categoryInput, setCategoryInput] = useState('');
-  const [categories, setCategories] = useState<string[]>([]);
-  const [image, setImage] = useState<File | null>(null);
+  const [files, setFiles] = useState<FileList | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const resetForm = () => {
-    setType('prompt');
-    setTitle('');
-    setContent('');
-    setUrl('');
-    setCategoryInput('');
-    setCategories([]);
-    setImage(null);
-  };
-
-  const addCategory = () => {
-    if (categoryInput.trim() && !categories.includes(categoryInput.trim())) {
-      setCategories([...categories, categoryInput.trim()]);
-      setCategoryInput('');
-    }
-  };
-
-  const removeCategory = (category: string) => {
-    setCategories(categories.filter(c => c !== category));
-  };
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        toast.error('圖片大小不能超過 5MB');
-        return;
-      }
-      if (!['image/jpeg', 'image/png'].includes(file.type)) {
-        toast.error('只支援 JPG 和 PNG 格式');
-        return;
-      }
-      setImage(file);
-    }
-  };
-
-  const uploadImage = async (file: File): Promise<string | null> => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('User not authenticated');
-
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${user.id}/${Date.now()}.${fileExt}`;
-
-      const { data, error } = await supabase.storage
-        .from('images')
-        .upload(fileName, file);
-
-      if (error) throw error;
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('images')
-        .getPublicUrl(data.path);
-
-      return publicUrl;
-    } catch (error) {
-      console.error('Error uploading image:', error);
-      return null;
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!title.trim() || !content.trim()) {
-      toast.error('請填寫必要欄位');
-      return;
-    }
-
-    if (type === 'link' && !url.trim()) {
-      toast.error('連結類型需要提供 URL');
-      return;
-    }
-
+  const handleSubmit = async () => {
+    if (loading) return;
     setLoading(true);
 
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('User not authenticated');
+      if (!user) {
+        toast.error('尚未登入');
+        return;
+      }
 
-      let imageUrl = null;
-      if (image) {
-        imageUrl = await uploadImage(image);
-        if (!imageUrl) {
-          toast.error('圖片上傳失敗');
-          setLoading(false);
-          return;
+      // 基本驗證（檔案大小 / 類型）
+      if (type === 'prompt' && files && files.length > 0) {
+        for (const f of Array.from(files)) {
+          if (!f.type.startsWith('image/')) {
+            toast.error(`僅支援圖片檔，檔案：${f.name}`);
+            return;
+          }
+          if (f.size > 5 * 1024 * 1024) {
+            toast.error(`圖片過大（>5MB）：${f.name}`);
+            return;
+          }
         }
       }
 
-      // Create the item first
-      const { data: item, error } = await supabase
+      const categories = categoryInput.split(',').map(c => c.trim()).filter(Boolean);
+
+      // 1) 建立 item
+      const { data: insertData, error: insertError } = await supabase
         .from('items')
         .insert({
           user_id: user.id,
           type,
-          title: title.trim(),
-          raw_content: content.trim(),
-          url: type === 'link' ? url.trim() : null,
-          category: categories,
-
+          title: title || null,
+          raw_content: rawContent || null,
+          url: type === 'link' ? (url || null) : null,
+          category: categories.length ? categories : null,
         })
         .select()
         .single();
 
-      if (error) throw error;
+      if (insertError || !insertData) {
+        console.error('Insert error:', insertError);
+        toast.error('建立項目失敗：' + insertError?.message);
+        return;
+      }
 
-      // Process AI summary and embedding in background
-      processItemInBackground(item.id, content.trim());
+      // 2) 上載圖片（僅 prompt）
+      if (type === 'prompt' && files && files.length > 0) {
+        for (const file of Array.from(files)) {
+          const path = `${user.id}/${insertData.id}-${Date.now()}-${file.name}`;
+          const { error: uploadError } = await supabase
+            .storage
+            .from('prompt-images')
+            .upload(path, file, { cacheControl: '3600', upsert: false });
 
-      toast.success('項目已建立，正在處理中...');
-      resetForm();
+          if (uploadError) {
+            console.error(uploadError);
+            toast.error(`圖片上載失敗：${file.name}`);
+            continue;
+          }
+
+          const { data: pub } = supabase.storage.from('prompt-images').getPublicUrl(path);
+          if (pub?.publicUrl) {
+            await supabase
+              .from('prompt_assets')
+              .insert({ item_id: insertData.id, image_url: pub.publicUrl });
+          }
+        }
+      }
+
+      // 3) 觸發摘要 + 向量（非同步，不阻塞 UI）
+      fetch('/api/process-item', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemId: insertData.id })
+      }).catch(() => {});
+
+      toast.success('已新增');
+      // 給後端 0.8s 緩衝再刷新列表
+      setTimeout(() => onItemAdded(), 800);
       onOpenChange(false);
-      onItemAdded();
-    } catch (error) {
-      console.error('Error creating item:', error);
-      toast.error('建立項目失敗');
+
+      // reset
+      setTitle(''); setRawContent(''); setUrl(''); setCategoryInput(''); setFiles(null);
+    } catch (e) {
+      console.error(e);
+      toast.error('發生錯誤');
     } finally {
       setLoading(false);
     }
   };
 
-  const processItemInBackground = async (itemId: string, content: string) => {
-    try {
-      // Generate summary and embedding
-      const [summary, embedding] = await Promise.all([
-        generateSummary(content),
-        generateEmbedding(content)
-      ]);
-
-      // Update the item with AI-generated data
-      const { error } = await supabase
-        .from('items')
-        .update({
-          summary,
-          embedding
-        })
-        .eq('id', itemId);
-
-      if (error) {
-        console.error('Error updating item with AI data:', error);
-      }
-    } catch (error) {
-      console.error('Error processing item in background:', error);
-    }
-  };
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>新增項目</DialogTitle>
-          <DialogDescription>
-            新增提示或連結到您的知識庫
-          </DialogDescription>
-        </DialogHeader>
+    <Dialog open={open} onOpenChange={v => !loading && onOpenChange(v)}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>新增項目</DialogTitle></DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Type Selection */}
-          <div className="space-y-2">
-            <Label>類型</Label>
-            <RadioGroup value={type} onValueChange={(value: 'prompt' | 'link') => setType(value)}>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="prompt" id="prompt" />
-                <Label htmlFor="prompt">提示 (Prompt)</Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="link" id="link" />
-                <Label htmlFor="link">連結 (Link)</Label>
-              </div>
-            </RadioGroup>
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <Button type="button" variant={type === 'prompt' ? 'default' : 'outline'} size="sm" onClick={() => setType('prompt')}>Prompt</Button>
+            <Button type="button" variant={type === 'link' ? 'default' : 'outline'} size="sm" onClick={() => setType('link')}>Link</Button>
           </div>
 
-          {/* Title */}
           <div className="space-y-2">
-            <Label htmlFor="title">標題 *</Label>
-            <Input
-              id="title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="輸入標題..."
-              required
-            />
+            <Label>標題</Label>
+            <Input value={title} onChange={e => setTitle(e.target.value)} placeholder="可留空" />
           </div>
 
-          {/* URL for links */}
           {type === 'link' && (
             <div className="space-y-2">
-              <Label htmlFor="url">網址 *</Label>
-              <Input
-                id="url"
-                type="url"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://..."
-                required
-              />
+              <Label>網址</Label>
+              <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://..." />
             </div>
           )}
 
-          {/* Content */}
           <div className="space-y-2">
-            <Label htmlFor="content">內容 *</Label>
-            <Textarea
-              id="content"
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder={type === 'prompt' ? '輸入您的提示內容...' : '輸入相關描述或筆記...'}
-              rows={6}
-              required
-            />
+            <Label>{type === 'prompt' ? 'Prompt 內容' : '備註/描述'}</Label>
+            <Textarea value={rawContent} onChange={e => setRawContent(e.target.value)} rows={4} />
           </div>
 
-          {/* Categories */}
           <div className="space-y-2">
-            <Label>分類標籤</Label>
-            <div className="flex space-x-2">
-              <Input
-                value={categoryInput}
-                onChange={(e) => setCategoryInput(e.target.value)}
-                placeholder="輸入分類名稱"
-                onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addCategory())}
-              />
-              <Button type="button" onClick={addCategory} variant="outline">
-                新增
-              </Button>
-            </div>
-            {categories.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-2">
-                {categories.map((category) => (
-                  <Badge key={category} variant="secondary" className="cursor-pointer">
-                    {category}
-                    <X
-                      className="h-3 w-3 ml-1"
-                      onClick={() => removeCategory(category)}
-                    />
-                  </Badge>
-                ))}
-              </div>
-            )}
+            <Label>分類（逗號分隔）</Label>
+            <Input value={categoryInput} onChange={e => setCategoryInput(e.target.value)} placeholder="例如：行銷, 個人成長" />
           </div>
 
-          {/* Image Upload (prompt only) */}
           {type === 'prompt' && (
             <div className="space-y-2">
-              <Label>圖片 (選填)</Label>
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-4">
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png"
-                  onChange={handleImageUpload}
-                  className="hidden"
-                  id="image-upload"
-                />
-                <label htmlFor="image-upload" className="cursor-pointer">
-                  <div className="text-center">
-                    <Upload className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-                    <p className="text-sm text-gray-600">
-                      點擊上傳圖片 (最大 5MB, JPG/PNG)
-                    </p>
-                    {image && (
-                      <p className="text-sm text-green-600 mt-2">
-                        已選擇: {image.name}
-                      </p>
-                    )}
-                  </div>
-                </label>
-              </div>
+              <Label>圖片（可多選）</Label>
+              <Input type="file" accept="image/*" multiple onChange={e => setFiles(e.target.files)} />
+              <p className="text-xs text-gray-500">支援多張，單張上限 5MB。</p>
             </div>
           )}
 
-          {/* Actions */}
-          <div className="flex justify-end space-x-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={loading}
-            >
-              取消
-            </Button>
-            <Button type="submit" disabled={loading}>
-              {loading ? '建立中...' : '建立項目'}
-            </Button>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" disabled={loading} onClick={() => onOpenChange(false)}>取消</Button>
+            <Button disabled={loading} onClick={handleSubmit}>{loading ? '處理中...' : '建立'}</Button>
           </div>
-        </form>
+        </div>
       </DialogContent>
     </Dialog>
   );
