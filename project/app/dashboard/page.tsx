@@ -1,111 +1,66 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { Database } from '@/lib/supabaseClient';
+
+import { Brain, FileText, Link as LinkIcon, LogOut, SearchIcon, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { AddItemModal } from '@/components/AddItemModal';
-import {
-  SearchIcon,
-  Plus,
-  LogOut,
-  Brain,
-  FileText,
-  Link as LinkIcon,
-  Wand2,
-  Pencil,
-} from 'lucide-react';
-import { formatDate, truncateText } from '@/lib/utils';
 import { toast } from 'sonner';
-import { searchItems } from '@/lib/api';
-
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
+import { formatDate, truncateText } from '@/lib/utils';
 
 type ItemRow = Database['public']['Tables']['items']['Row'];
-type ItemWithAssets = ItemRow & {
-  prompt_assets?: { image_url: string | null }[];
-};
+type ItemWithAssets = ItemRow & { prompt_assets?: { image_url: string | null }[] };
 
 export const dynamic = 'force-dynamic';
 
 export default function DashboardPage() {
   const router = useRouter();
 
+  // data
+  const [user, setUser] = useState<any>(null);
   const [items, setItems] = useState<ItemWithAssets[]>([]);
-  const [filteredItems, setFilteredItems] = useState<ItemWithAssets[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [filtered, setFiltered] = useState<ItemWithAssets[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
 
+  // ui state
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
-  const [categories, setCategories] = useState<string[]>([]);
-  const [user, setUser] = useState<any>(null);
 
-  const [showAddModal, setShowAddModal] = useState(false);
-
-  // AI 提示（保存完整文字；UI 顯示截斷，hover 顯示完整）
-  const [aiSummaries, setAiSummaries] = useState<Record<number, string>>({});
+  // per-card summarize state
+  const [hintById, setHintById] = useState<Record<number, string>>({});
   const [summarizingId, setSummarizingId] = useState<number | null>(null);
 
-  // 編輯對話框
-  const [editOpen, setEditOpen] = useState(false);
-  const [editing, setEditing] = useState<ItemWithAssets | null>(null);
-  const [editTitle, setEditTitle] = useState('');
-  const [editUrl, setEditUrl] = useState('');
-  const [editRaw, setEditRaw] = useState('');
-  const [editCats, setEditCats] = useState('');
-
-  // ===== Auth =====
   useEffect(() => {
-    checkUser();
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        if (event === 'SIGNED_IN' && session) setUser(session.user);
-        else if (event === 'SIGNED_OUT') router.push('/login');
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        router.replace('/login');
+        return;
       }
-    );
-    return () => subscription.unsubscribe();
-  }, []);
+      setUser(user);
+      // upsert 使用者
+      await supabase.from('users').upsert({ id: user.id, email: user.email || '' }).select();
+      await loadItems();
+    })().catch(() => {
+      toast.error('載入失敗');
+      router.replace('/login');
+    });
+  }, [router]);
 
-  useEffect(() => {
-    if (user) fetchItems();
-  }, [user]);
-
-  useEffect(() => {
-    filterItems();
-  }, [items, searchQuery, selectedCategory]);
-
-  const checkUser = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      router.push('/login');
-      return;
-    }
-    setUser(user);
-    await supabase.from('users').upsert({ id: user.id, email: user.email! }).select();
-  };
-
-  // ===== Data =====
-  const fetchItems = async () => {
+  const loadItems = async () => {
     try {
+      setLoading(true);
       const { data, error } = await supabase
         .from('items')
         .select('*, prompt_assets(image_url)')
@@ -113,130 +68,101 @@ export default function DashboardPage() {
 
       if (error) throw error;
 
-      const list = (data as ItemWithAssets[]) || [];
+      const list = (data || []) as ItemWithAssets[];
       setItems(list);
+      // 從 DB 帶回的 summary 先塞到本地 hint，之後點提示再覆蓋
+      const seedHints: Record<number, string> = {};
+      list.forEach(i => {
+        if (i.summary) seedHints[i.id as number] = i.summary;
+      });
+      setHintById(seedHints);
 
-      const all = list.flatMap((it) => it.category || []);
-      setCategories(Array.from(new Set(all)));
-    } catch (e) {
-      console.error(e);
-      toast.error('載入項目失敗');
+      const allCats = list.flatMap(i => i.category || []);
+      setCategories(Array.from(new Set(allCats)));
+      setFiltered(list);
+    } catch (e: any) {
+      toast.error('讀取項目失敗');
     } finally {
       setLoading(false);
     }
   };
 
-  const filterItems = () => {
-    let filtered = items;
-    if (searchQuery) {
+  // 篩選
+  useEffect(() => {
+    let arr = items;
+    if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        (item) =>
-          (item.title || '').toLowerCase().includes(q) ||
-          (item.raw_content || '').toLowerCase().includes(q) ||
-          (item.summary || '').toLowerCase().includes(q)
+      arr = arr.filter(i =>
+        (i.title || '').toLowerCase().includes(q) ||
+        (i.raw_content || '').toLowerCase().includes(q) ||
+        (i.summary || '').toLowerCase().includes(q)
       );
     }
     if (selectedCategory) {
-      filtered = filtered.filter((item) =>
-        item.category?.includes(selectedCategory)
-      );
+      arr = arr.filter(i => i.category?.includes(selectedCategory));
     }
-    setFilteredItems(filtered);
-  };
+    setFiltered(arr);
+  }, [items, searchQuery, selectedCategory]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
-    router.push('/');
+    router.replace('/login');
   };
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) return;
-    try {
-      if (!user?.id) return;
-      const results = await searchItems(searchQuery, user.id);
-      setFilteredItems(results);
-    } catch {
-      const q = searchQuery.toLowerCase();
-      const filtered = items.filter(
-        (item) =>
-          (item.title || '').toLowerCase().includes(q) ||
-          (item.raw_content || '').toLowerCase().includes(q) ||
-          (item.summary || '').toLowerCase().includes(q)
-      );
-      setFilteredItems(filtered);
-    }
+  const handleSearch = () => {
+    // 已用 useEffect 做即時篩選；這裡留空或做 analytics
   };
 
-  // ===== AI 提示（帶圖片） =====
-  const handleSummarize = async (item: ItemWithAssets, e?: React.MouseEvent) => {
-    e?.preventDefault();
-    e?.stopPropagation();
-
-    const title = item.title || '';
-    const desc = item.summary || item.raw_content || item.url || '';
-    const imageUrls = (item.prompt_assets || [])
-      .map((a) => a.image_url)
-      .filter(Boolean) as string[];
-
+  // 產生 AI 提示（30 字內），也會寫回 DB: items.summary
+  const handleSummarize = async (item: ItemWithAssets) => {
+    if (summarizingId) return;
     setSummarizingId(item.id as number);
+
     try {
+      // 準備圖片（最多 2 張公開網址）
+      const images =
+        (item.prompt_assets || [])
+          .map(a => a.image_url)
+          .filter(Boolean)
+          .slice(0, 2) as string[];
+
+      const payload = {
+        title: item.title || '',
+        description: (item.raw_content || item.url || ''),
+        images,
+      };
+
       const res = await fetch('/api/summarize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, description: desc, images: imageUrls }),
+        body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error(await res.text());
+
       const data = await res.json();
-      const full: string = (data.summary || '').trim();
-      setAiSummaries((prev) => ({ ...prev, [item.id as number]: full }));
-      toast.success('已產生提示');
-    } catch (err) {
-      console.error(err);
-      toast.error('AI 提示失敗');
+      if (!res.ok || !data?.ok) {
+        toast.error(`提示失敗：${data?.error || res.statusText}`);
+        return;
+      }
+
+      const summary: string = data.summary || '';
+      // 1) 即時顯示
+      setHintById(prev => ({ ...prev, [item.id as number]: summary }));
+
+      // 2) 寫回 DB（之後重整也有）
+      const { error: upErr } = await supabase
+        .from('items')
+        .update({ summary })
+        .eq('id', item.id);
+      if (upErr) {
+        // 不阻塞 UI，提示即可
+        console.warn('寫回摘要失敗：', upErr.message);
+      } else {
+        toast.success('已產生提示');
+      }
+    } catch (e: any) {
+      toast.error(`提示失敗：${e?.message || String(e)}`);
     } finally {
       setSummarizingId(null);
-    }
-  };
-
-  // ===== 編輯 =====
-  const openEdit = (item: ItemWithAssets, e?: React.MouseEvent) => {
-    e?.preventDefault();
-    e?.stopPropagation();
-    setEditing(item);
-    setEditTitle(item.title || '');
-    setEditUrl(item.url || '');
-    setEditRaw(item.raw_content || '');
-    setEditCats((item.category || []).join(','));
-    setEditOpen(true);
-  };
-
-  const saveEdit = async () => {
-    if (!editing) return;
-    try {
-      const cats = editCats
-        .split(',')
-        .map((c) => c.trim())
-        .filter(Boolean);
-
-      const { error } = await supabase
-        .from('items')
-        .update({
-          title: editTitle || null,
-          url: editing.type === 'link' ? editUrl || null : null,
-          raw_content: editRaw || null,
-          category: cats.length ? cats : null,
-        })
-        .eq('id', editing.id);
-
-      if (error) throw error;
-
-      toast.success('已更新');
-      setEditOpen(false);
-      await fetchItems();
-    } catch (e) {
-      console.error(e);
-      toast.error('更新失敗');
     }
   };
 
@@ -252,104 +178,97 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <Brain className="h-8 w-8 text-blue-600" />
-            <h1 className="text-2xl font-bold text-gray-900">
-              AI Knowledge Vault
-            </h1>
-          </div>
-          <div className="flex items-center space-x-4">
-            <Avatar>
-              <AvatarFallback>{user?.email?.[0]?.toUpperCase()}</AvatarFallback>
-            </Avatar>
-            <Button variant="ghost" onClick={handleLogout}>
-              <LogOut className="h-4 w-4 mr-2" />
-              登出
-            </Button>
-          </div>
-        </div>
-      </header>
-
-      <div className="container mx-auto px-4 py-8">
-        {/* Search & Actions */}
-        <div className="mb-8 space-y-4">
-          <div className="flex gap-4">
-            <div className="flex-1 relative">
-              <SearchIcon className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
-              <Input
-                placeholder="搜尋知識庫..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                className="pl-10"
-              />
+    <TooltipProvider delayDuration={200}>
+      <div className="min-h-screen bg-gray-50">
+        {/* Header */}
+        <header className="bg-white border-b">
+          <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <Brain className="h-8 w-8 text-blue-600" />
+              <h1 className="text-2xl font-bold text-gray-900">AI Knowledge Vault</h1>
             </div>
-            <Button onClick={handleSearch}>搜尋</Button>
-            <Button onClick={() => setShowAddModal(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              新增項目
-            </Button>
-          </div>
-
-          {/* Category Filters */}
-          {categories.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant={selectedCategory === '' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setSelectedCategory('')}
-              >
-                全部
+            <div className="flex items-center space-x-4">
+              <Avatar>
+                <AvatarFallback>{user?.email?.[0]?.toUpperCase()}</AvatarFallback>
+              </Avatar>
+              <Button variant="ghost" onClick={handleLogout}>
+                <LogOut className="h-4 w-4 mr-2" />
+                登出
               </Button>
-              {categories.map((category) => (
-                <Button
-                  key={category}
-                  variant={selectedCategory === category ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setSelectedCategory(category)}
-                >
-                  {category}
-                </Button>
-              ))}
             </div>
-          )}
-        </div>
+          </div>
+        </header>
 
-        {/* Items Grid */}
-        {filteredItems.length === 0 ? (
-          <div className="text-center py-12">
-            <Brain className="h-16 w-16 text-gray-300 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">
-              {items.length === 0 ? '開始建立您的知識庫' : '找不到相關項目'}
-            </h3>
-            <p className="text-gray-600 mb-4">
-              {items.length === 0
-                ? '新增您的第一個項目來開始使用 AI Knowledge Vault'
-                : '嘗試不同的搜尋關鍵字或篩選條件'}
-            </p>
-            {items.length === 0 && (
-              <Button onClick={() => setShowAddModal(true)}>
-                <Plus className="h-4 w-4 mr-2" />
+        {/* Main */}
+        <div className="container mx-auto px-4 py-8">
+          {/* Search + Actions */}
+          <div className="mb-8 space-y-4">
+            <div className="flex gap-4">
+              <div className="flex-1 relative">
+                <SearchIcon className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                <Input
+                  placeholder="搜尋知識庫..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  className="pl-10"
+                />
+              </div>
+              <Button onClick={() => setShowAdd(true)}>
                 新增項目
               </Button>
+            </div>
+
+            {/* Category filters */}
+            {categories.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant={selectedCategory === '' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setSelectedCategory('')}
+                >
+                  全部
+                </Button>
+                {categories.map((c) => (
+                  <Button
+                    key={c}
+                    variant={selectedCategory === c ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setSelectedCategory(c)}
+                  >
+                    {c}
+                  </Button>
+                ))}
+              </div>
             )}
           </div>
-        ) : (
-          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {filteredItems.map((item) => {
-              const firstImage = item.prompt_assets?.[0]?.image_url || null;
-              const fullBrief = aiSummaries[item.id as number] || '';
-              const shortBrief = truncateText(fullBrief, 30);
 
-              return (
-                <Link key={item.id} href={`/items/${item.id}`}>
-                  <Card className="h-full hover:shadow-lg transition-shadow cursor-pointer">
+          {/* Grid */}
+          {filtered.length === 0 ? (
+            <div className="text-center py-12">
+              <Brain className="h-16 w-16 text-gray-300 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 mb-2">
+                {items.length === 0 ? '開始建立您的知識庫' : '找不到相關項目'}
+              </h3>
+              <p className="text-gray-600 mb-4">
+                {items.length === 0
+                  ? '新增您的第一個項目來開始使用 AI Knowledge Vault'
+                  : '嘗試不同的搜尋關鍵字或篩選條件'}
+              </p>
+              {items.length === 0 && (
+                <Button onClick={() => setShowAdd(true)}>新增項目</Button>
+              )}
+            </div>
+          ) : (
+            <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+              {filtered.map((item) => {
+                const firstImage = item.prompt_assets?.[0]?.image_url || '';
+                const hint = hintById[item.id as number];
+
+                return (
+                  <Card key={item.id} className="h-full hover:shadow-lg transition-shadow">
                     <CardHeader>
-                      {/* 首圖 */}
+                      {/* 圖片預覽（第一張） */}
                       {firstImage && (
                         <div className="mb-3">
                           <img
@@ -360,57 +279,56 @@ export default function DashboardPage() {
                         </div>
                       )}
 
-                      <div className="flex items-start justify-between">
-                        <div className="flex items-center space-x-2">
-                          {item.type === 'prompt' ? (
-                            <FileText className="h-5 w-5 text-blue-600" />
-                          ) : (
-                            <LinkIcon className="h-5 w-5 text-green-600" />
-                          )}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          {item.type === 'prompt'
+                            ? <FileText className="h-5 w-5 text-blue-600" />
+                            : <LinkIcon className="h-5 w-5 text-green-600" />
+                          }
                           <Badge variant={item.type === 'prompt' ? 'default' : 'secondary'}>
                             {item.type === 'prompt' ? '提示' : '連結'}
                           </Badge>
+                          {/* 一鍵產生提示 */}
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleSummarize(item)}
+                                disabled={summarizingId === (item.id as number)}
+                              >
+                                <Sparkles className="h-4 w-4 mr-1" />
+                                {summarizingId === (item.id as number) ? '產生中…' : '提示'}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              以 AI 產生 30 字內的極簡摘要（含圖片、內容）
+                            </TooltipContent>
+                          </Tooltip>
                         </div>
 
-                        <div className="flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={(e) => handleSummarize(item, e)}
-                            disabled={summarizingId === item.id}
-                          >
-                            <Wand2 className="h-4 w-4 mr-1" />
-                            {summarizingId === item.id ? '產生中…' : '提示'}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={(e) => openEdit(item, e)}
-                          >
-                            <Pencil className="h-4 w-4 mr-1" />
-                            編輯
-                          </Button>
-                        </div>
+                        {/* 查看詳情 */}
+                        <Button asChild size="sm" variant="ghost">
+                          <Link href={`/items/${item.id}`}>詳情</Link>
+                        </Button>
                       </div>
 
-                      {/* AI 30字摘要（hover 顯示完整） */}
-                      {fullBrief && (
-                        <CardDescription
-                          className="mt-2 text-[13px] text-blue-700"
-                          title={fullBrief}
-                        >
-                          {shortBrief}
-                        </CardDescription>
-                      )}
-
-                      <CardTitle className="text-lg leading-tight mt-1" title={item.title || ''}>
+                      <CardTitle className="text-lg leading-tight mt-2">
                         {truncateText(item.title || '', 60)}
                       </CardTitle>
 
-                      {item.summary && (
-                        <CardDescription className="text-sm" title={item.summary || ''}>
-                          {truncateText(item.summary || '', 100)}
-                        </CardDescription>
+                      {/* 卡片上即時顯示摘要（30字），hover 看全文 */}
+                      {hint && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <CardDescription className="text-sm cursor-help">
+                              {truncateText(hint, 30)}
+                            </CardDescription>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs">
+                            {hint}
+                          </TooltipContent>
+                        </Tooltip>
                       )}
                     </CardHeader>
 
@@ -418,81 +336,30 @@ export default function DashboardPage() {
                       <div className="space-y-3">
                         {item.category && item.category.length > 0 && (
                           <div className="flex flex-wrap gap-1">
-                            {/* 顯示全部分類 */}
-                            {item.category.map((cat) => (
+                            {item.category.slice(0, 3).map((cat) => (
                               <Badge key={cat} variant="outline" className="text-xs">
                                 {cat}
                               </Badge>
                             ))}
+                            {item.category.length > 3 && (
+                              <Badge variant="outline" className="text-xs">
+                                +{item.category.length - 3}
+                              </Badge>
+                            )}
                           </div>
                         )}
-                        <div className="text-xs text-gray-500">
-                          {formatDate(item.created_at)}
-                        </div>
+                        <div className="text-xs text-gray-500">{formatDate(item.created_at)}</div>
                       </div>
                     </CardContent>
                   </Card>
-                </Link>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <AddItemModal open={showAdd} onOpenChange={setShowAdd} onItemAdded={loadItems} />
       </div>
-
-      {/* 新增項目 */}
-      <AddItemModal
-        open={showAddModal}
-        onOpenChange={setShowAddModal}
-        onItemAdded={fetchItems}
-      />
-
-      {/* 編輯項目（簡易版） */}
-      <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>編輯項目</DialogTitle>
-          </DialogHeader>
-
-          <div className="space-y-3">
-            <div>
-              <Label>標題</Label>
-              <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
-            </div>
-
-            {editing?.type === 'link' && (
-              <div>
-                <Label>網址</Label>
-                <Input value={editUrl} onChange={(e) => setEditUrl(e.target.value)} />
-              </div>
-            )}
-
-            <div>
-              <Label>{editing?.type === 'prompt' ? '內容' : '備註'}</Label>
-              <Textarea
-                rows={5}
-                value={editRaw}
-                onChange={(e) => setEditRaw(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <Label>分類（逗號分隔）</Label>
-              <Input
-                value={editCats}
-                onChange={(e) => setEditCats(e.target.value)}
-                placeholder="例如：AI, 圖像, 策略"
-              />
-            </div>
-
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setEditOpen(false)}>
-                取消
-              </Button>
-              <Button onClick={saveEdit}>儲存</Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </div>
+    </TooltipProvider>
   );
 }
