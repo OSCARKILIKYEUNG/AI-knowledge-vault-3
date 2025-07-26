@@ -10,6 +10,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const text = (body?.text ?? '').toString();
+
     if (!text.trim()) {
       return NextResponse.json({ ok: false, error: 'missing text' }, { status: 400 });
     }
@@ -30,7 +31,7 @@ export async function POST(req: Request) {
       const t = await resp.text().catch(() => '');
       return NextResponse.json(
         { ok: false, error: `embedding_failed: ${t}` },
-        { status: 502 },
+        { status: 502 }
       );
     }
 
