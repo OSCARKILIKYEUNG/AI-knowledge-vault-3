@@ -1,4 +1,3 @@
-// app/api/process-item/route.ts
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
@@ -15,13 +14,11 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const rawId = body?.itemId;
-    const itemId = Number(rawId);
+    const itemId = Number(body?.itemId);
     if (!itemId || Number.isNaN(itemId)) {
       return NextResponse.json({ ok: false, error: 'missing itemId' }, { status: 400 });
     }
 
-    // 取 item + 圖片
     const { data: item, error: itemErr } = await supabaseAdmin
       .from('items')
       .select('id, title, raw_content, url, category, summary, prompt_assets(image_url)')
@@ -34,9 +31,8 @@ export async function POST(req: Request) {
     const images: string[] =
       (item as any).prompt_assets?.map((a: any) => a.image_url).filter(Boolean) ?? [];
 
-    // === 1) 產生一般摘要 ===
-    const sysPrompt =
-      '你是中文寫作助理，請輸出「精簡中文摘要」。請條理清晰、短段落、重點化，避免冗語。';
+    // 1) 產生摘要
+    const sysPrompt = '你是中文寫作助理，輸出精簡中文摘要，條理清晰、重點化、避免冗語。';
     const userPrompt = [
       item.title ? `標題：${item.title}` : '',
       item.raw_content ? `內容（節錄）：${String(item.raw_content).slice(0, 1200)}` : '',
@@ -46,21 +42,14 @@ export async function POST(req: Request) {
 
     const chatResp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${openrouterKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { Authorization: `Bearer ${openrouterKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: CHAT_MODEL,
-        messages: [
-          { role: 'system', content: sysPrompt },
-          { role: 'user', content: userPrompt },
-        ],
+        messages: [{ role: 'system', content: sysPrompt }, { role: 'user', content: userPrompt }],
         temperature: 0.3,
         max_tokens: 300,
       }),
     });
-
     if (!chatResp.ok) {
       const t = await chatResp.text().catch(() => '');
       return NextResponse.json({ ok: false, error: `openrouter_chat_failed: ${t}` }, { status: 502 });
@@ -71,7 +60,7 @@ export async function POST(req: Request) {
       chatJson?.choices?.[0]?.text?.trim?.() ||
       '';
 
-    // === 2) 產生 Embedding（Cohere 多語） ===
+    // 2) 產生 embedding（Cohere）
     const embedInput = [
       item.title ?? '',
       summary ?? '',
@@ -82,16 +71,9 @@ export async function POST(req: Request) {
 
     const embResp = await fetch('https://openrouter.ai/api/v1/embeddings', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${openrouterKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: EMBED_MODEL,
-        input: embedInput,
-      }),
+      headers: { Authorization: `Bearer ${openrouterKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: EMBED_MODEL, input: embedInput }),
     });
-
     if (!embResp.ok) {
       const t = await embResp.text().catch(() => '');
       return NextResponse.json({ ok: false, error: `embedding_failed: ${t}` }, { status: 502 });
@@ -102,7 +84,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: 'empty_embedding' }, { status: 500 });
     }
 
-    // === 3) 回寫 DB ===
+    // 3) 更新 DB
     const { error: upErr } = await supabaseAdmin
       .from('items')
       .update({ summary, embedding })
