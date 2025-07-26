@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server';
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const EMBED_MODEL = process.env.OPENROUTER_EMBED_MODEL || 'nomic-ai/nomic-embed-text-v1.5';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,7 +17,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'missing text' }, { status: 400 });
     }
 
-    // 用 OpenRouter 的 Embeddings 端點 + Cohere 多語模型
+    // 呼叫 OpenRouter embeddings 端點
     const resp = await fetch('https://openrouter.ai/api/v1/embeddings', {
       method: 'POST',
       headers: {
@@ -24,7 +25,7 @@ export async function POST(req: Request) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'cohere/embed-multilingual-v3.0',
+        model: EMBED_MODEL,
         input: text,
       }),
     });
