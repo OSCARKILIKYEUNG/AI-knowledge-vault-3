@@ -1,81 +1,95 @@
-// app/api/process-item/route.ts
+// app/api/summarize/route.ts
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const serviceKey   = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const openrouterKey = process.env.OPENROUTER_API_KEY!;
 
-// 僅伺服器端使用，繞過 RLS 寫入 embedding
-const supabaseAdmin = createClient(supabaseUrl, serviceKey);
+const supabase = createClient(supabaseUrl, serviceKey);
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const itemId = Number(body?.itemId);
-    if (!itemId || Number.isNaN(itemId)) {
-      return NextResponse.json({ ok: false, error: 'missing itemId' }, { status: 400 });
+    const { itemId } = await req.json();
+    const id = Number(itemId);
+    if (!id || Number.isNaN(id)) {
+      return NextResponse.json({ ok:false, error:'missing itemId' }, { status: 400 });
     }
 
-    // 取 item（含圖片提示 summary_tip 一併）
-    const { data: item, error } = await supabaseAdmin
+    // 讀 item + 圖片 URL
+    const { data, error } = await supabase
       .from('items')
-      .select('id, title, raw_content, summary, summary_tip, url, category')
-      .eq('id', itemId)
+      .select('id, title, raw_content, url, prompt_assets(image_url)')
+      .eq('id', id)
       .single();
 
-    if (error || !item) {
-      return NextResponse.json({ ok: false, error: 'item_not_found' }, { status: 404 });
+    if (error || !data) {
+      return NextResponse.json({ ok:false, error:'item_not_found' }, { status: 404 });
     }
 
-    // 整合要做 embedding 的文本（把 summary_tip 也塞進去，讓圖片描述能被索引）
-    const embedText = [
-      item.title ? `標題：${item.title}` : '',
-      item.raw_content ? `內容：${item.raw_content}` : '',
-      item.summary ? `AI摘要：${item.summary}` : '',
-      item.summary_tip ? `圖片提示：${item.summary_tip}` : '',
-      item.url ? `連結：${item.url}` : '',
-      item.category?.length ? `分類：${item.category.join('、')}` : '',
-    ].filter(Boolean).join('\n');
+    const images: string[] =
+      (data as any).prompt_assets?.map((a:any) => a.image_url).filter(Boolean).slice(0,3) ?? [];
 
-    // 產生向量（OpenRouter 的 embedding 端點）
-    const embRes = await fetch('https://openrouter.ai/api/v1/embeddings', {
+    // 準備 multimodal content（OpenAI 兼容格式）
+    const sys = '你是中文助理，請用繁體中文，限制在 30 字內，精簡總結此卡片重點。若有圖片，結合畫面說明重點；避免贅詞。';
+
+    const userContent: any[] = [
+      { type:'text', text:
+          [
+            data.title ? `標題：${data.title}` : '',
+            data.raw_content ? `內容：${data.raw_content.slice(0,400)}` : '',
+            data.url ? `連結：${data.url}` : ''
+          ].filter(Boolean).join('\n')
+      }
+    ];
+
+    for (const url of images) {
+      userContent.push({ type:'image_url', image_url: { url } });
+    }
+
+    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${openrouterKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'openai/text-embedding-3-small',
-        input: embedText.slice(0, 8000), // 保險切長度
+        model: 'openai/gpt-4o-mini',
+        messages: [
+          { role: 'system', content: sys },
+          { role: 'user',   content: userContent },
+        ],
+        max_tokens: 80,
+        temperature: 0.3,
       }),
     });
 
-    if (!embRes.ok) {
-      const t = await embRes.text().catch(() => '');
-      return NextResponse.json({ ok: false, error: `embedding_failed: ${t}` }, { status: 502 });
+    if (!resp.ok) {
+      const t = await resp.text().catch(()=> '');
+      return NextResponse.json({ ok:false, error:`openrouter_failed: ${t}` }, { status: 502 });
     }
 
-    const embJson = await embRes.json();
-    const vector: number[] = embJson?.data?.[0]?.embedding;
-    if (!Array.isArray(vector)) {
-      return NextResponse.json({ ok: false, error: 'invalid_embedding' }, { status: 500 });
-    }
+    const out = await resp.json();
+    let tip =
+      out?.choices?.[0]?.message?.content?.trim?.() ||
+      out?.choices?.[0]?.text?.trim?.() ||
+      '';
 
-    // 寫回 items.embedding
-    const { error: upErr } = await supabaseAdmin
+    if (tip.length > 60) tip = tip.slice(0, 60); // 粗略切到 ~30中文字
+
+    // 寫回 DB
+    const { error: upErr } = await supabase
       .from('items')
-      .update({ embedding: vector })
-      .eq('id', itemId);
+      .update({ summary_tip: tip })
+      .eq('id', id);
 
     if (upErr) {
-      return NextResponse.json({ ok: false, error: `db_update_failed: ${upErr.message}` }, { status: 500 });
+      return NextResponse.json({ ok:false, error:`db_update_failed: ${upErr.message}` }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message ?? 'unknown_error' }, { status: 500 });
+    return NextResponse.json({ ok:true, tip });
+  } catch (e:any) {
+    return NextResponse.json({ ok:false, error: e?.message ?? 'unknown_error' }, { status: 500 });
   }
 }
-
-export const dynamic = 'force-dynamic';
