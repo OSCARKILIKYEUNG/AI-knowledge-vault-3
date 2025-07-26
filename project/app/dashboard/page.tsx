@@ -205,13 +205,13 @@ export default function DashboardPage() {
               <Link key={item.id} href={`/items/${item.id}`}>
                 <Card className="h-full hover:shadow-lg transition-shadow cursor-pointer">
                   <CardHeader>
-                    {/* 顯示首圖 */}
+                    {/* 顯示首張圖片 */}
                     {item.prompt_assets?.[0]?.image_url && (
                       <div className="mb-3">
                         <img
                           src={item.prompt_assets[0].image_url}
                           alt="預覽圖"
-                          className="w-full h-32 object-cover rounded"
+                          className="w-full h-40 object-cover rounded-md"
                         />
                       </div>
                     )}
