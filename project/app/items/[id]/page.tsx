@@ -254,7 +254,7 @@ export default function ItemDetailPage() {
             <p className="text-sm text-gray-500 mt-1">建立於：{formatDate(item.created_at)}</p>
             {item.summary_tip && (
               <p className="mt-2 text-sm text-blue-700 bg-blue-50 inline-block px-2 py-1 rounded">
-                提示：{item.summary_tip}
+                Prompt：{item.summary_tip}
               </p>
             )}
           </CardHeader>
