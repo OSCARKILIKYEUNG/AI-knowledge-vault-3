@@ -17,12 +17,11 @@ import { formatDate, truncateText } from '@/lib/utils';
 import { toast } from 'sonner';
 import { searchItems } from '@/lib/api';
 
-// --- 型別：把 summary_tip 加進 items Row ---
-type ItemBase = Database['public']['Tables']['items']['Row'] & {
+// 讓 TS 知道有 summary_tip 欄位
+type ItemRow = Database['public']['Tables']['items']['Row'] & {
   summary_tip?: string | null;
 };
-// 關聯 prompt_assets 只取 image_url
-type ItemWithAssets = ItemBase & {
+type ItemWithAssets = ItemRow & {
   prompt_assets?: { image_url: string | null }[];
 };
 
@@ -40,10 +39,7 @@ export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
   const [showAddModal, setShowAddModal] = useState(false);
 
-  // 產生提示中：避免重複點擊
-  const [summarizingId, setSummarizingId] = useState<number | null>(null);
-
-  // 防止重複初始化
+  const [summarizingId, setSummarizingId] = useState<number | null>(null); // 產生提示中
   const booted = useRef(false);
 
   useEffect(() => {
@@ -56,7 +52,6 @@ export default function DashboardPage() {
       if (event === 'SIGNED_IN' && session) setUser(session.user);
       else if (event === 'SIGNED_OUT') router.push('/login');
     });
-
     return () => subscription.unsubscribe();
   }, [router]);
 
@@ -83,15 +78,17 @@ export default function DashboardPage() {
   const fetchItems = async () => {
     try {
       setLoading(true);
+      // 把 summary_tip 一起選回來
       const { data, error } = await supabase
         .from('items')
-        .select('*, prompt_assets(image_url)')
+        .select('id, user_id, type, title, raw_content, url, summary, category, created_at, summary_tip, prompt_assets(image_url)')
         .order('created_at', { ascending: false });
+
       if (error) throw error;
 
       setItems((data as ItemWithAssets[]) || []);
 
-      // 產出分類
+      // 分類清單
       const allCategories = (data || []).flatMap((it: any) => it.category || []);
       setCategories(Array.from(new Set(allCategories)));
     } catch (e) {
@@ -127,7 +124,6 @@ export default function DashboardPage() {
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     try {
-      // 若你已接 AI 搜尋，可保留；否則用前端 filter
       const results = await searchItems(searchQuery, user.id);
       setFilteredItems(results as ItemWithAssets[]);
     } catch {
@@ -142,7 +138,7 @@ export default function DashboardPage() {
     }
   };
 
-  // === 呼叫 /api/summarize 產生提示 ===
+  // 呼叫 /api/summarize 產生 30 字提示
   async function makeTip(itemId: number) {
     try {
       setSummarizingId(itemId);
@@ -152,11 +148,8 @@ export default function DashboardPage() {
         body: JSON.stringify({ itemId }),
       });
       const json = await res.json();
-      if (!res.ok || !json.ok) {
-        throw new Error(json.error || '提示失敗');
-      }
-      // 重新取資料，更新 summary_tip
-      await fetchItems();
+      if (!res.ok || !json.ok) throw new Error(json.error || '提示失敗');
+      await fetchItems(); // 重新抓資料更新 summary_tip
       toast.success('已產生提示');
     } catch (e: any) {
       toast.error(e?.message ?? '提示失敗');
@@ -198,7 +191,7 @@ export default function DashboardPage() {
       </header>
 
       <div className="container mx-auto px-4 py-8">
-        {/* Search & Actions */}
+        {/* Search + Actions */}
         <div className="mb-8 space-y-4">
           <div className="flex gap-4">
             <div className="flex-1 relative">
@@ -293,12 +286,9 @@ export default function DashboardPage() {
                         variant="outline"
                         size="sm"
                         onClick={(e) => {
-                          e.preventDefault();
-                          if (typeof item.id === 'number') {
-                            makeTip(item.id);
-                          } else {
-                            toast.error('無效的項目 ID');
-                          }
+                          e.preventDefault(); // 不要跳到詳情頁
+                          if (typeof item.id === 'number') makeTip(item.id);
+                          else toast.error('無效的項目 ID');
                         }}
                         disabled={summarizingId === (item.id as number)}
                         title={item.summary_tip || '按一下產生提示'}
@@ -307,20 +297,20 @@ export default function DashboardPage() {
                       </Button>
                     </div>
 
-                    <CardTitle className="text-lg leading-tight mt-2">
+                    <CardTitle className="text-lg leading-tight mt-2" title={item.title || ''}>
                       {truncateText(item.title || '', 60)}
                     </CardTitle>
 
-                    {/* 顯示 30 字內提示（同時還是保留 title hover 完整顯示） */}
+                    {/* 顯示 30 字提示：放 title 讓 hover 看全文 */}
                     {item.summary_tip && (
-                      <CardDescription className="text-sm">
-                        {truncateText(item.summary_tip, 60)}
+                      <CardDescription className="text-sm" title={item.summary_tip || ''}>
+                        {truncateText(item.summary_tip || '', 60)}
                       </CardDescription>
                     )}
 
-                    {/* 若也有 AI 摘要，可顯示節錄 */}
+                    {/* 原本 AI 摘要（可選） */}
                     {item.summary && (
-                      <CardDescription className="text-sm">
+                      <CardDescription className="text-sm" title={item.summary || ''}>
                         {truncateText(item.summary || '', 100)}
                       </CardDescription>
                     )}
