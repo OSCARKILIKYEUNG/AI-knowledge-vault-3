@@ -1,56 +1,39 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { Database } from '@/lib/supabaseClient';
+import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AddItemModal } from '@/components/AddItemModal';
-import {
-  SearchIcon,
-  Plus,
-  LogOut,
-  Brain,
-  FileText,
-  Link as LinkIcon,
-} from 'lucide-react';
+import { Brain, FileText, Link as LinkIcon, LogOut, Plus, SearchIcon } from 'lucide-react';
 import { formatDate, truncateText } from '@/lib/utils';
-import { toast } from 'sonner';
 
-type ItemBase = Database['public']['Tables']['items']['Row'] & {
+type ItemRow = Database['public']['Tables']['items']['Row'] & {
   summary_tip?: string | null;
 };
-type ItemWithAssets = ItemBase & {
-  prompt_assets?: { image_url: string | null }[];
-};
+type ItemWithAssets = ItemRow & { prompt_assets?: { image_url: string | null }[] };
 
 export default function DashboardPage() {
   const router = useRouter();
 
+  const [user, setUser] = useState<any>(null);
   const [items, setItems] = useState<ItemWithAssets[]>([]);
   const [filteredItems, setFilteredItems] = useState<ItemWithAssets[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
-  const [categories, setCategories] = useState<string[]>([]);
-
-  const [user, setUser] = useState<any>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [summarizingId, setSummarizingId] = useState<number | null>(null);
-
   const booted = useRef(false);
 
   useEffect(() => {
@@ -58,71 +41,64 @@ export default function DashboardPage() {
     booted.current = true;
 
     checkUser();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        if (event === 'SIGNED_IN' && session) setUser(session.user);
-        else if (event === 'SIGNED_OUT') router.push('/login');
-      }
-    );
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((evt, session) => {
+      if (evt === 'SIGNED_IN' && session) setUser(session.user);
+      else if (evt === 'SIGNED_OUT') router.push('/login');
+    });
     return () => subscription.unsubscribe();
   }, [router]);
 
-  useEffect(() => { if (user) fetchItems(); }, [user]);
-  useEffect(() => { filterItems(); }, [items, selectedCategory]);
+  useEffect(() => {
+    if (user) fetchItems();
+  }, [user]);
 
-  const checkUser = async () => {
+  useEffect(() => {
+    applyKeywordFilter();
+  }, [items, searchQuery, selectedCategory]);
+
+  async function checkUser() {
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { router.push('/login'); return; }
+    if (!user) return router.push('/login');
     setUser(user);
     await supabase.from('users').upsert({ id: user.id, email: user.email! }).select();
-  };
+  }
 
-  const fetchItems = async () => {
+  async function fetchItems() {
     try {
       setLoading(true);
       const { data, error } = await supabase
         .from('items')
         .select('*, prompt_assets(image_url)')
         .order('created_at', { ascending: false });
-      if (error) throw error;
 
+      if (error) throw error;
       const list = (data as ItemWithAssets[]) || [];
       setItems(list);
-      setFilteredItems(list);
 
-      const allCategories = list.flatMap((it) => it.category || []);
-      setCategories(Array.from(new Set(allCategories)));
+      const allCats = list.flatMap((it) => it.category || []);
+      setCategories(Array.from(new Set(allCats)));
     } catch (e) {
       console.error(e);
       toast.error('載入項目失敗');
     } finally {
       setLoading(false);
     }
-  };
-
-  const filterItems = () => {
-    let filtered = items;
-    if (selectedCategory) {
-      filtered = filtered.filter((item) => item.category?.includes(selectedCategory));
-    }
-    setFilteredItems(filtered);
-  };
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    router.push('/');
-  };
-
-  // 只查標題
-  function handleKeywordSearch() {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) { setFilteredItems(items); return; }
-    const r = items.filter((it) => (it.title || '').toLowerCase().includes(q));
-    setFilteredItems(r);
   }
 
-  // AI 語意搜尋
+  // —— 只做「標題關鍵字搜尋」
+  function applyKeywordFilter() {
+    let arr = items;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      arr = arr.filter((it) => (it.title || '').toLowerCase().includes(q));
+    }
+    if (selectedCategory) {
+      arr = arr.filter((it) => it.category?.includes(selectedCategory));
+    }
+    setFilteredItems(arr);
+  }
+
+  // —— AI 搜尋：呼叫 /api/search（根據 summary_tip + title 的相似度與 ILIKE）
   async function handleAISearch() {
     if (!searchQuery.trim()) return;
     try {
@@ -132,31 +108,40 @@ export default function DashboardPage() {
         body: JSON.stringify({ query: searchQuery, userId: user.id }),
       });
       const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json?.error || 'AI 搜尋失敗');
+      if (!res.ok || !json.ok) throw new Error(json.error || 'AI 搜尋失敗');
+
       setFilteredItems(json.results || []);
+      toast.success('AI 搜尋完成');
     } catch (e: any) {
+      console.error(e);
       toast.error(e?.message ?? 'AI 搜尋失敗');
     }
   }
 
-  // 產生 30 字提示（含圖片）
+  // —— 產 30 字「提示」
   async function makeTip(itemId: number) {
     try {
       setSummarizingId(itemId);
-      const res = await fetch('/api/summarize', {
+      const res = await fetch('/api/ai-tip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ itemId }),
       });
       const json = await res.json();
       if (!res.ok || !json.ok) throw new Error(json.error || '提示失敗');
-      await fetchItems();
+
+      await fetchItems(); // 刷新 summary_tip
       toast.success('已產生提示');
     } catch (e: any) {
       toast.error(e?.message ?? '提示失敗');
     } finally {
       setSummarizingId(null);
     }
+  }
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.push('/');
   }
 
   if (loading) {
@@ -180,36 +165,48 @@ export default function DashboardPage() {
             <h1 className="text-2xl font-bold text-gray-900">AI Knowledge Vault</h1>
           </div>
           <div className="flex items-center space-x-4">
-            <Avatar><AvatarFallback>{user?.email?.[0]?.toUpperCase()}</AvatarFallback></Avatar>
+            <Avatar>
+              <AvatarFallback>{user?.email?.[0]?.toUpperCase()}</AvatarFallback>
+            </Avatar>
             <Button variant="ghost" onClick={handleLogout}>
-              <LogOut className="h-4 w-4 mr-2" /> 登出
+              <LogOut className="h-4 w-4 mr-2" />
+              登出
             </Button>
           </div>
         </div>
       </header>
 
       <div className="container mx-auto px-4 py-8">
-        {/* Search & Actions */}
+        {/* 搜尋 + 動作 */}
         <div className="mb-8 space-y-4">
           <div className="flex gap-4">
             <div className="flex-1 relative">
               <SearchIcon className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
               <Input
-                placeholder="關鍵字只搜尋標題；AI 搜尋可輸入描述或關鍵字"
+                placeholder="輸入關鍵字…（標題搜尋）"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleKeywordSearch()}
+                onKeyDown={(e) => e.key === 'Enter' && applyKeywordFilter()}
                 className="pl-10"
               />
             </div>
-            <Button onClick={handleKeywordSearch}>標題搜尋</Button>
-            <Button variant="outline" onClick={handleAISearch}>AI 搜尋</Button>
+
+            {/* 標題搜尋（純前端） */}
+            <Button onClick={applyKeywordFilter}>標題搜尋</Button>
+
+            {/* AI 搜尋（後端相似度） */}
+            <Button variant="secondary" onClick={handleAISearch}>
+              AI 搜尋
+            </Button>
+
+            {/* 新增項目 */}
             <Button onClick={() => setShowAddModal(true)}>
-              <Plus className="h-4 w-4 mr-2" /> 新增項目
+              <Plus className="h-4 w-4 mr-2" />
+              新增項目
             </Button>
           </div>
 
-          {/* Category Filters */}
+          {/* 分類篩選 */}
           {categories.length > 0 && (
             <div className="flex flex-wrap gap-2">
               <Button
@@ -219,21 +216,21 @@ export default function DashboardPage() {
               >
                 全部
               </Button>
-              {categories.map((category) => (
+              {categories.map((cat) => (
                 <Button
-                  key={category}
-                  variant={selectedCategory === category ? 'default' : 'outline'}
+                  key={cat}
+                  variant={selectedCategory === cat ? 'default' : 'outline'}
                   size="sm"
-                  onClick={() => setSelectedCategory(category)}
+                  onClick={() => setSelectedCategory(cat)}
                 >
-                  {category}
+                  {cat}
                 </Button>
               ))}
             </div>
           )}
         </div>
 
-        {/* Items Grid */}
+        {/* Items */}
         {filteredItems.length === 0 ? (
           <div className="text-center py-12">
             <Brain className="h-16 w-16 text-gray-300 mx-auto mb-4" />
@@ -243,11 +240,12 @@ export default function DashboardPage() {
             <p className="text-gray-600 mb-4">
               {items.length === 0
                 ? '新增您的第一個項目來開始使用 AI Knowledge Vault'
-                : '請嘗試不同關鍵字、篩選或使用 AI 搜尋'}
+                : '嘗試不同的關鍵字或使用 AI 搜尋'}
             </p>
             {items.length === 0 && (
               <Button onClick={() => setShowAddModal(true)}>
-                <Plus className="h-4 w-4 mr-2" /> 新增項目
+                <Plus className="h-4 w-4 mr-2" />
+                新增項目
               </Button>
             )}
           </div>
@@ -257,7 +255,7 @@ export default function DashboardPage() {
               <Link key={item.id} href={`/items/${item.id}`}>
                 <Card className="h-full hover:shadow-lg transition-shadow cursor-pointer">
                   <CardHeader>
-                    {/* 首張圖片 */}
+                    {/* 首張圖 */}
                     {item.prompt_assets?.[0]?.image_url && (
                       <div className="mb-3">
                         <img
@@ -270,15 +268,17 @@ export default function DashboardPage() {
 
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-2">
-                        {item.type === 'prompt'
-                          ? <FileText className="h-5 w-5 text-blue-600" />
-                          : <LinkIcon className="h-5 w-5 text-green-600" />}
+                        {item.type === 'prompt' ? (
+                          <FileText className="h-5 w-5 text-blue-600" />
+                        ) : (
+                          <LinkIcon className="h-5 w-5 text-green-600" />
+                        )}
                         <Badge variant={item.type === 'prompt' ? 'default' : 'secondary'}>
                           {item.type === 'prompt' ? '提示' : '連結'}
                         </Badge>
                       </div>
 
-                      {/* 產生提示按鈕（阻止 Link 直接跳頁） */}
+                      {/* 產生提示（阻止 Link 跳頁） */}
                       <Button
                         variant="outline"
                         size="sm"
@@ -294,29 +294,22 @@ export default function DashboardPage() {
                       </Button>
                     </div>
 
-                    {/* 標題（hover 顯示完整） */}
-                    <CardTitle className="text-lg leading-tight mt-2" title={item.title || ''}>
+                    {/* 標題 */}
+                    <CardTitle className="text-lg leading-tight mt-2">
                       {truncateText(item.title || '', 60)}
                     </CardTitle>
 
-                    {/* 內容前 20 字 */}
-                    {item.raw_content && (
-                      <CardDescription className="text-sm text-gray-700" title={item.raw_content}>
-                        {truncateText(item.raw_content, 20)}
-                      </CardDescription>
-                    )}
-
-                    {/* 30 字內提示 */}
+                    {/* 30 字提示（AI） */}
                     {item.summary_tip && (
-                      <CardDescription className="text-sm" title={item.summary_tip}>
-                        {truncateText(item.summary_tip, 60)}
+                      <CardDescription className="text-sm" title={item.summary_tip || ''}>
+                        {truncateText(item.summary_tip || '', 60)}
                       </CardDescription>
                     )}
 
-                    {/* AI 摘要 */}
-                    {item.summary && (
-                      <CardDescription className="text-sm">
-                        {truncateText(item.summary || '', 100)}
+                    {/* 顯示內容前 20 字 */}
+                    {item.raw_content && (
+                      <CardDescription className="text-xs text-gray-600 mt-1" title={item.raw_content}>
+                        {truncateText(item.raw_content, 20)}
                       </CardDescription>
                     )}
                   </CardHeader>
