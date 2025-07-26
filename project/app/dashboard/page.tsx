@@ -355,7 +355,7 @@ export default function DashboardPage() {
                         disabled={summarizingId === item.id}
                         title={item.summary_tip || '按一下產生（或重算）提示'}
                       >
-                        {summarizingId === item.id ? '產生中…' : '提示'}
+                        {summarizingId === item.id ? '產生中…' : 'Prompt'}
                       </Button>
                     </div>
 
