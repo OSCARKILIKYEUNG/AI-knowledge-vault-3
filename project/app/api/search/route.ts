@@ -6,20 +6,21 @@ const serviceKey    = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const openrouterKey = process.env.OPENROUTER_API_KEY!;
 
 const admin = createClient(supabaseUrl, serviceKey);
-
 export const dynamic = 'force-dynamic';
 
 const EMBEDDING_CANDIDATES = [
+  'google/text-embedding-004',
   'voyage/voyage-3-lite',
-  'snowflake/arctic-embed-l-v2.0',
   'nomic-ai/nomic-embed-text-v1.5',
   'jinaai/jina-embeddings-v3',
-  'cohere/embed-multilingual-v3.0',
+  'snowflake/arctic-embed-l-v2.0',
 ];
 
-async function getEmbeddingByOpenRouter(input: string): Promise<number[]> {
+async function getEmbeddingByOpenRouter(input: string) {
   let lastErr = '';
+  const tried: string[] = [];
   for (const model of EMBEDDING_CANDIDATES) {
+    tried.push(model);
     try {
       const r = await fetch('https://openrouter.ai/api/v1/embeddings', {
         method: 'POST',
@@ -35,12 +36,12 @@ async function getEmbeddingByOpenRouter(input: string): Promise<number[]> {
         j?.data?.[0]?.embedding ||
         j?.data?.[0]?.embedding_float ||
         [];
-      if (Array.isArray(vec) && vec.length > 0) return vec;
+      if (Array.isArray(vec) && vec.length > 0) return { embedding: vec, model, tried };
     } catch (e: any) {
       lastErr = e?.message ?? String(e);
     }
   }
-  throw new Error(`All models failed. last=${lastErr}`);
+  throw new Error(`All models failed. tried=${tried.join(', ')} last=${lastErr}`);
 }
 
 function cosine(a: number[], b: number[]) {
@@ -64,10 +65,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: 'missing params' }, { status: 400 });
     }
 
-    // 把查詢變成向量
-    const qvec = await getEmbeddingByOpenRouter(query);
+    const { embedding: qvec, model, tried } = await getEmbeddingByOpenRouter(query);
 
-    // 取出使用者的 items（要有 embedding）
     const { data, error } = await admin
       .from('items')
       .select('*, prompt_assets(image_url)')
@@ -77,15 +76,14 @@ export async function POST(req: Request) {
 
     if (error) throw error;
 
-    // 計算相似度 + (標題命中加權)
     const list = (data || []).map((it: any) => {
       const score = cosine(qvec, it.embedding || []);
-      const hit = (it.title || '').toLowerCase().includes(String(query).toLowerCase());
-      return { ...it, __score: score + (hit ? 0.2 : 0) };
+      const titleHit = (it.title || '').toLowerCase().includes(String(query).toLowerCase());
+      return { ...it, __score: score + (titleHit ? 0.2 : 0) };
     });
 
     list.sort((a: any, b: any) => (b.__score ?? 0) - (a.__score ?? 0));
-    return NextResponse.json({ ok: true, results: list.slice(0, 30) });
+    return NextResponse.json({ ok: true, model, tried, results: list.slice(0, 30) });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? 'unknown_error' }, { status: 500 });
   }
