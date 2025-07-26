@@ -29,11 +29,9 @@ import {
 import { formatDate, truncateText } from '@/lib/utils';
 import { toast } from 'sonner';
 
-// 讓 items Row 可以包含 summary_tip（有的專案 schema 可能沒生成型別）
 type ItemBase = Database['public']['Tables']['items']['Row'] & {
   summary_tip?: string | null;
 };
-// 關聯 prompt_assets 只取 image_url
 type ItemWithAssets = ItemBase & {
   prompt_assets?: { image_url: string | null }[];
 };
@@ -51,11 +49,8 @@ export default function DashboardPage() {
 
   const [user, setUser] = useState<any>(null);
   const [showAddModal, setShowAddModal] = useState(false);
-
-  // 產生提示中的卡片 id（避免重複點擊）
   const [summarizingId, setSummarizingId] = useState<number | null>(null);
 
-  // 防止 useEffect 重複初始化
   const booted = useRef(false);
 
   useEffect(() => {
@@ -70,34 +65,19 @@ export default function DashboardPage() {
         else if (event === 'SIGNED_OUT') router.push('/login');
       }
     );
-
     return () => subscription.unsubscribe();
   }, [router]);
 
-  useEffect(() => {
-    if (user) fetchItems();
-  }, [user]);
+  useEffect(() => { if (user) fetchItems(); }, [user]);
+  useEffect(() => { filterItems(); }, [items, selectedCategory]);
 
-  useEffect(() => {
-    filterItems();
-  }, [items, searchQuery, selectedCategory]);
-
-  // 檢查登入，並確保 users 表有紀錄
   const checkUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      router.push('/login');
-      return;
-    }
+    if (!user) { router.push('/login'); return; }
     setUser(user);
-    const { error } = await supabase
-      .from('users')
-      .upsert({ id: user.id, email: user.email! })
-      .select();
-    if (error) console.error('Error creating user:', error);
+    await supabase.from('users').upsert({ id: user.id, email: user.email! }).select();
   };
 
-  // 讀資料 + 關聯首張圖
   const fetchItems = async () => {
     try {
       setLoading(true);
@@ -105,16 +85,14 @@ export default function DashboardPage() {
         .from('items')
         .select('*, prompt_assets(image_url)')
         .order('created_at', { ascending: false });
-
       if (error) throw error;
 
       const list = (data as ItemWithAssets[]) || [];
       setItems(list);
+      setFilteredItems(list);
 
-      // 產出分類
       const allCategories = list.flatMap((it) => it.category || []);
       setCategories(Array.from(new Set(allCategories)));
-      setFilteredItems(list);
     } catch (e) {
       console.error(e);
       toast.error('載入項目失敗');
@@ -123,15 +101,11 @@ export default function DashboardPage() {
     }
   };
 
-  // 僅就地篩選（不打 API）
   const filterItems = () => {
     let filtered = items;
     if (selectedCategory) {
-      filtered = filtered.filter((item) =>
-        item.category?.includes(selectedCategory)
-      );
+      filtered = filtered.filter((item) => item.category?.includes(selectedCategory));
     }
-    // 關鍵字由「標題搜尋」按鈕觸發，這邊不主動處理
     setFilteredItems(filtered);
   };
 
@@ -140,20 +114,15 @@ export default function DashboardPage() {
     router.push('/');
   };
 
-  // ===== 搜尋：A. 標題搜尋（只查 title；不打 AI） =====
+  // 只查標題
   function handleKeywordSearch() {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) {
-      setFilteredItems(items);
-      return;
-    }
-    const r = items.filter((it) =>
-      (it.title || '').toLowerCase().includes(q)
-    );
+    if (!q) { setFilteredItems(items); return; }
+    const r = items.filter((it) => (it.title || '').toLowerCase().includes(q));
     setFilteredItems(r);
   }
 
-  // ===== 搜尋：B. AI 搜尋（語意 + 向量；呼叫 /api/search）=====
+  // AI 語意搜尋
   async function handleAISearch() {
     if (!searchQuery.trim()) return;
     try {
@@ -163,16 +132,14 @@ export default function DashboardPage() {
         body: JSON.stringify({ query: searchQuery, userId: user.id }),
       });
       const json = await res.json();
-      if (!res.ok || !json.ok) {
-        throw new Error(json?.error || 'AI 搜尋失敗');
-      }
+      if (!res.ok || !json.ok) throw new Error(json?.error || 'AI 搜尋失敗');
       setFilteredItems(json.results || []);
     } catch (e: any) {
       toast.error(e?.message ?? 'AI 搜尋失敗');
     }
   }
 
-  // ===== 卡片「提示」：呼叫 /api/summarize，產生 30 字內摘要（含圖片）=====
+  // 產生 30 字提示（含圖片）
   async function makeTip(itemId: number) {
     try {
       setSummarizingId(itemId);
@@ -182,10 +149,7 @@ export default function DashboardPage() {
         body: JSON.stringify({ itemId }),
       });
       const json = await res.json();
-      if (!res.ok || !json.ok) {
-        throw new Error(json.error || '提示失敗');
-      }
-      // 重新取資料，更新 summary_tip
+      if (!res.ok || !json.ok) throw new Error(json.error || '提示失敗');
       await fetchItems();
       toast.success('已產生提示');
     } catch (e: any) {
@@ -216,12 +180,9 @@ export default function DashboardPage() {
             <h1 className="text-2xl font-bold text-gray-900">AI Knowledge Vault</h1>
           </div>
           <div className="flex items-center space-x-4">
-            <Avatar>
-              <AvatarFallback>{user?.email?.[0]?.toUpperCase()}</AvatarFallback>
-            </Avatar>
+            <Avatar><AvatarFallback>{user?.email?.[0]?.toUpperCase()}</AvatarFallback></Avatar>
             <Button variant="ghost" onClick={handleLogout}>
-              <LogOut className="h-4 w-4 mr-2" />
-              登出
+              <LogOut className="h-4 w-4 mr-2" /> 登出
             </Button>
           </div>
         </div>
@@ -234,25 +195,17 @@ export default function DashboardPage() {
             <div className="flex-1 relative">
               <SearchIcon className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
               <Input
-                placeholder="輸入關鍵字（僅查標題）或語意描述（AI 搜尋）..."
+                placeholder="關鍵字只搜尋標題；AI 搜尋可輸入描述或關鍵字"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  // Enter 預設做「標題搜尋」
-                  if (e.key === 'Enter') handleKeywordSearch();
-                }}
+                onKeyDown={(e) => e.key === 'Enter' && handleKeywordSearch()}
                 className="pl-10"
               />
             </div>
-
             <Button onClick={handleKeywordSearch}>標題搜尋</Button>
-            <Button variant="outline" onClick={handleAISearch}>
-              AI 搜尋
-            </Button>
-
+            <Button variant="outline" onClick={handleAISearch}>AI 搜尋</Button>
             <Button onClick={() => setShowAddModal(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              新增項目
+              <Plus className="h-4 w-4 mr-2" /> 新增項目
             </Button>
           </div>
 
@@ -290,12 +243,11 @@ export default function DashboardPage() {
             <p className="text-gray-600 mb-4">
               {items.length === 0
                 ? '新增您的第一個項目來開始使用 AI Knowledge Vault'
-                : '請嘗試不同的關鍵字、篩選或使用 AI 搜尋'}
+                : '請嘗試不同關鍵字、篩選或使用 AI 搜尋'}
             </p>
             {items.length === 0 && (
               <Button onClick={() => setShowAddModal(true)}>
-                <Plus className="h-4 w-4 mr-2" />
-                新增項目
+                <Plus className="h-4 w-4 mr-2" /> 新增項目
               </Button>
             )}
           </div>
@@ -318,11 +270,9 @@ export default function DashboardPage() {
 
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-2">
-                        {item.type === 'prompt' ? (
-                          <FileText className="h-5 w-5 text-blue-600" />
-                        ) : (
-                          <LinkIcon className="h-5 w-5 text-green-600" />
-                        )}
+                        {item.type === 'prompt'
+                          ? <FileText className="h-5 w-5 text-blue-600" />
+                          : <LinkIcon className="h-5 w-5 text-green-600" />}
                         <Badge variant={item.type === 'prompt' ? 'default' : 'secondary'}>
                           {item.type === 'prompt' ? '提示' : '連結'}
                         </Badge>
@@ -334,11 +284,8 @@ export default function DashboardPage() {
                         size="sm"
                         onClick={(e) => {
                           e.preventDefault();
-                          if (typeof item.id === 'number') {
-                            makeTip(item.id);
-                          } else {
-                            toast.error('無效的項目 ID');
-                          }
+                          if (typeof item.id === 'number') makeTip(item.id);
+                          else toast.error('無效的項目 ID');
                         }}
                         disabled={summarizingId === (item.id as number)}
                         title={item.summary_tip || '按一下產生提示'}
@@ -348,12 +295,16 @@ export default function DashboardPage() {
                     </div>
 
                     {/* 標題（hover 顯示完整） */}
-                    <CardTitle
-                      className="text-lg leading-tight mt-2"
-                      title={item.title || ''}
-                    >
+                    <CardTitle className="text-lg leading-tight mt-2" title={item.title || ''}>
                       {truncateText(item.title || '', 60)}
                     </CardTitle>
+
+                    {/* 內容前 20 字 */}
+                    {item.raw_content && (
+                      <CardDescription className="text-sm text-gray-700" title={item.raw_content}>
+                        {truncateText(item.raw_content, 20)}
+                      </CardDescription>
+                    )}
 
                     {/* 30 字內提示 */}
                     {item.summary_tip && (
@@ -362,7 +313,7 @@ export default function DashboardPage() {
                       </CardDescription>
                     )}
 
-                    {/* AI 摘要（可留） */}
+                    {/* AI 摘要 */}
                     {item.summary && (
                       <CardDescription className="text-sm">
                         {truncateText(item.summary || '', 100)}
@@ -386,9 +337,7 @@ export default function DashboardPage() {
                           )}
                         </div>
                       )}
-                      <div className="text-xs text-gray-500">
-                        {formatDate(item.created_at)}
-                      </div>
+                      <div className="text-xs text-gray-500">{formatDate(item.created_at)}</div>
                     </div>
                   </CardContent>
                 </Card>
