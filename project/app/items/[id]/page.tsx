@@ -240,7 +240,7 @@ export default function ItemDetailPage() {
           <CardHeader>
             <div className="flex items-center gap-2 mb-2">
               <Badge variant={item.type === 'prompt' ? 'default' : 'secondary'}>
-                {item.type === 'prompt' ? '提示' : '連結'}
+                {item.type === 'prompt' ? 'Prompt' : '連結'}
               </Badge>
               {item.category && item.category.length > 0 && (
                 <div className="flex flex-wrap gap-1">
