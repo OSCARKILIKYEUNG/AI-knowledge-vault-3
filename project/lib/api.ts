@@ -1,70 +1,52 @@
-// Client-side API functions for Netlify Functions
+// lib/api.ts
+// 前端呼叫 Next.js /api 路由（不再用 Netlify Functions）
 
-export async function generateSummary(text: string): Promise<string> {
-  try {
-    const response = await fetch('/.netlify/functions/summarize', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ text }),
-    });
+/** Hybrid 搜尋（關鍵字 + 向量）。mode 可選：'hybrid' | 'keyword' | 'semantic' */
+export async function searchItems(
+  q: string,
+  userId: string,
+  mode: 'hybrid' | 'keyword' | 'semantic' = 'hybrid',
+  limit = 24
+): Promise<any[]> {
+  const res = await fetch('/api/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q, userId, mode, limit }),
+  });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return data.summary || '無法生成摘要';
-  } catch (error) {
-    console.error('Error generating summary:', error);
-    return '無法生成摘要';
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.ok) {
+    throw new Error(json?.error || `search_failed (${res.status})`);
   }
+  return json.items as any[];
 }
 
-export async function generateEmbedding(text: string): Promise<number[]> {
-  try {
-    const response = await fetch('/.netlify/functions/embed', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ text }),
-    });
+/** 針對單一 item 產生 30 字內摘要提示（含圖片、內容）並寫回 items.summary_tip */
+export async function requestItemTip(itemId: number): Promise<string> {
+  const res = await fetch('/api/summarize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ itemId }),
+  });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return data.embedding || [];
-  } catch (error) {
-    console.error('Error generating embedding:', error);
-    return [];
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.ok) {
+    throw new Error(json?.error || `summarize_failed (${res.status})`);
   }
+  // 回傳本次產生的 tip（同時已寫回 DB）
+  return json.tip as string;
 }
 
-export async function searchItems(query: string, userId: string): Promise<any[]> {
-  try {
-    // First get embedding for the query
-    const embedding = await generateEmbedding(query);
+/** 重新計算指定 item 的 embedding（向量），寫入 items.embedding */
+export async function reindexItem(itemId: number): Promise<void> {
+  const res = await fetch('/api/process-item', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ itemId }),
+  });
 
-    const response = await fetch('/.netlify/functions/search', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ query, embedding, userId }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return data.results || [];
-  } catch (error) {
-    console.error('Error searching items:', error);
-    return [];
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.ok) {
+    throw new Error(json?.error || `process_item_failed (${res.status})`);
   }
 }
