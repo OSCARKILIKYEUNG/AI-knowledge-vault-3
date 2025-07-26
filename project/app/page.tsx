@@ -1,77 +1,101 @@
-import Link from 'next/link';
-import { Button } from '@/components/ui/button';
-import { Brain, Search, Lightbulb, Link as LinkIcon } from 'lucide-react';
+'use client'
 
-export default function Home() {
+import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
+import { supabase } from '@/lib/supabaseClient';
+import { Database } from '@/lib/supabaseClient';
+import { formatDate } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
+import { Loader2 } from 'lucide-react';
+
+type Item = Database['public']['Tables']['items']['Row'];
+type PromptAsset = {
+  id: string;
+  item_id: string;
+  image_url: string;
+};
+
+export default function ItemPage() {
+  const { id } = useParams();
+  const [item, setItem] = useState<Item | null>(null);
+  const [images, setImages] = useState<PromptAsset[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (id) fetchItem(id as string);
+  }, [id]);
+
+  const fetchItem = async (itemId: string) => {
+    setLoading(true);
+
+    const { data: itemData, error: itemError } = await supabase
+      .from('items')
+      .select('*')
+      .eq('id', itemId)
+      .single();
+
+    if (itemError || !itemData) {
+      console.error(itemError);
+      setLoading(false);
+      return;
+    }
+
+    const { data: imageData } = await supabase
+      .from('prompt_assets')
+      .select('*')
+      .eq('item_id', itemId);
+
+    setItem(itemData);
+    setImages(imageData || []);
+    setLoading(false);
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen text-gray-600">
+        <Loader2 className="h-6 w-6 animate-spin mr-2" />
+        載入中...
+      </div>
+    );
+  }
+
+  if (!item) {
+    return (
+      <div className="text-center mt-20 text-gray-500">找不到該項目。</div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50">
-      {/* Header */}
-      <header className="border-b bg-white/80 backdrop-blur-sm">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <Brain className="h-8 w-8 text-blue-600" />
-            <h1 className="text-2xl font-bold text-gray-900">AI Knowledge Vault</h1>
+    <div className="max-w-3xl mx-auto px-4 py-10 space-y-8">
+      <div>
+        <h1 className="text-2xl font-bold mb-2">{item.title}</h1>
+        <p className="text-gray-500 text-sm">{formatDate(item.created_at)}</p>
+        {item.category?.length > 0 && (
+          <div className="flex flex-wrap gap-2 mt-2">
+            {item.category.map((cat) => (
+              <Badge key={cat} variant="outline">{cat}</Badge>
+            ))}
           </div>
-          <div className="space-x-4">
-            <Link href="/login">
-              <Button variant="ghost">登入</Button>
-            </Link>
-            <Link href="/login">
-              <Button>開始使用</Button>
-            </Link>
-          </div>
+        )}
+      </div>
+
+      {images.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {images.map((img) => (
+            <img
+              key={img.id}
+              src={img.image_url}
+              alt="項目圖片"
+              className="w-full h-48 object-cover rounded"
+            />
+          ))}
         </div>
-      </header>
+      )}
 
-      {/* Hero Section */}
-      <main className="container mx-auto px-4 py-16">
-        <div className="text-center max-w-4xl mx-auto">
-          <h2 className="text-5xl font-bold text-gray-900 mb-6 leading-tight">
-            智能知識管理系統
-          </h2>
-          <p className="text-xl text-gray-600 mb-8 leading-relaxed">
-            使用 AI 技術整理、搜尋和管理您的知識庫。支援文字提示和網頁連結，自動生成摘要和智能搜尋。
-          </p>
-          <Link href="/login">
-            <Button size="lg" className="px-8 py-3 text-lg">
-              立即開始
-            </Button>
-          </Link>
-        </div>
-
-        {/* Features */}
-        <div className="grid md:grid-cols-3 gap-8 mt-20">
-          <div className="text-center p-8 rounded-2xl bg-white shadow-sm border hover:shadow-md transition-shadow">
-            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Lightbulb className="h-8 w-8 text-blue-600" />
-            </div>
-            <h3 className="text-xl font-semibold mb-3">智能摘要</h3>
-            <p className="text-gray-600">
-              AI 自動為您的內容生成繁體中文摘要，快速了解重點資訊。
-            </p>
-          </div>
-
-          <div className="text-center p-8 rounded-2xl bg-white shadow-sm border hover:shadow-md transition-shadow">
-            <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Search className="h-8 w-8 text-green-600" />
-            </div>
-            <h3 className="text-xl font-semibold mb-3">向量搜尋</h3>
-            <p className="text-gray-600">
-              基於語義相似性的智能搜尋，找到最相關的知識內容。
-            </p>
-          </div>
-
-          <div className="text-center p-8 rounded-2xl bg-white shadow-sm border hover:shadow-md transition-shadow">
-            <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <LinkIcon className="h-8 w-8 text-purple-600" />
-            </div>
-            <h3 className="text-xl font-semibold mb-3">多元內容</h3>
-            <p className="text-gray-600">
-              支援文字提示、網頁連結和圖片上傳，全方位管理您的知識。
-            </p>
-          </div>
-        </div>
-      </main>
+      <div>
+        <h2 className="text-lg font-semibold mb-2">內容</h2>
+        <p className="whitespace-pre-line text-gray-800">{item.raw_content}</p>
+      </div>
     </div>
   );
 }
