@@ -121,22 +121,26 @@ export default function DashboardPage() {
     router.push('/');
   };
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) return;
-    try {
-      const results = await searchItems(searchQuery, user.id);
-      setFilteredItems(results as ItemWithAssets[]);
-    } catch {
-      const q = searchQuery.toLowerCase();
-      const filtered = items.filter((item) =>
-        (item.title || '').toLowerCase().includes(q) ||
-        (item.raw_content || '').toLowerCase().includes(q) ||
-        (item.summary || '').toLowerCase().includes(q) ||
-        (item.summary_tip || '').toLowerCase().includes(q)
-      );
-      setFilteredItems(filtered);
-    }
-  };
+const [searching, setSearching] = useState(false);
+
+const handleSearch = async () => {
+  if (!searchQuery.trim()) return;
+  if (!user?.id) {
+    toast.error('尚未登入');
+    return;
+  }
+  try {
+    setSearching(true);
+    const results = await searchItems(searchQuery, user.id);
+    setFilteredItems(results as any);
+    toast.success(`AI 搜尋完成，共 ${results.length} 筆`);
+  } catch (e: any) {
+    console.error(e);
+    toast.error('AI 搜尋失敗');
+  } finally {
+    setSearching(false);
+  }
+};
 
   // 呼叫 /api/summarize 產生 30 字提示
   async function makeTip(itemId: number) {
