@@ -1,88 +1,81 @@
-// project/app/api/summarize/route.ts
-import type { NextRequest } from 'next/server';
+// /project/app/api/summarize/route.ts
+import { NextResponse } from 'next/server';
 
-export const runtime = 'edge'; // 輕量、快；也可刪掉用 node
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini';
 
-type SummarizeBody = {
-  title?: string | null;
-  raw_content?: string | null;
-  url?: string | null;
-  images?: string[]; // 之後若要傳圖片網址可用
-};
+// 如果你用 OpenAI，改成：
+// const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as SummarizeBody;
+    const body = await req.json();
+    const { title = '', description = '', images = [] as string[] } = body || {};
 
-    const title = (body.title ?? '').slice(0, 200);
-    const content = (body.raw_content ?? '').slice(0, 2000);
-    const link = (body.url ?? '').slice(0, 300);
-
-    const pieces = [
-      title && `標題：${title}`,
-      content && `內容：${content}`,
-      link && `連結：${link}`,
-    ]
-      .filter(Boolean)
-      .join('\n');
-
-    const prompt = `
-你是中文產品小編。請以繁體中文，幫我用不超過30字的單句，
-精準概述這個項目重點（可包含圖片/連結大意）。避免贅詞、標點過多。
----
-${pieces}
-    `.trim();
-
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    const model = process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini';
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: 'Missing OPENROUTER_API_KEY' }), {
-        status: 500,
-        headers: { 'content-type': 'application/json' },
-      });
+    if (!OPENROUTER_API_KEY) {
+      return NextResponse.json(
+        { error: 'Missing OPENROUTER_API_KEY' },
+        { status: 500 }
+      );
     }
 
+    // 構造 multi‑modal content：先文字，再最多 2 張圖片
+    const contents: any[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text:
+              `請根據以下資訊，輸出繁體中文 30 字以內的精簡介紹（不要超過30字、不要加標點尾語、不要使用換行）。\n\n` +
+              `標題：${title}\n` +
+              `內容/連結：${description || '（無）'}\n` +
+              (images?.length ? `圖片共 ${images.length} 張（已附前兩張 URL）` : '沒有圖片')
+          },
+          // 將圖片以 image_url 的方式附上（最多 2 張）
+          ...images
+            .filter(Boolean)
+            .slice(0, 2)
+            .map((url: string) => ({
+              type: 'image_url',
+              image_url: { url },
+            })),
+        ],
+      },
+    ];
+
+    // 呼叫 OpenRouter（OpenAI 兼容格式）
     const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        // 可選：標註來源網站，有助模型優先度
-        'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL || '',
-        'X-Title': 'AI Knowledge Vault',
+        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
       },
       body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: '你是精準中文摘要助手。' },
-          { role: 'user', content: prompt },
-        ],
+        model: OPENROUTER_MODEL,
+        messages: contents,
         temperature: 0.2,
         max_tokens: 80,
       }),
     });
 
     if (!resp.ok) {
-      const text = await resp.text();
-      return new Response(JSON.stringify({ error: 'LLM request failed', detail: text }), {
-        status: 502,
-        headers: { 'content-type': 'application/json' },
-      });
+      const txt = await resp.text();
+      return NextResponse.json({ error: txt }, { status: resp.status });
     }
 
     const data = await resp.json();
-    const summary =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      '（暫無摘要）';
+    const text: string =
+      data?.choices?.[0]?.message?.content?.trim?.() || '';
 
-    return new Response(JSON.stringify({ summary }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
+    // 保障 <= 30 字
+    const summary = text.slice(0, 30);
+    return NextResponse.json({ summary });
   } catch (e: any) {
-    return new Response(JSON.stringify({ error: e?.message || 'Unknown error' }), {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-    });
+    return NextResponse.json(
+      { error: e?.message || 'unknown error' },
+      { status: 500 }
+    );
   }
 }
