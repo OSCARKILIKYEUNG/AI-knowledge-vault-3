@@ -48,11 +48,24 @@ export default function DashboardPage() {
   }, [items, searchQuery, selectedCategory]);
 
   const checkUser = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return router.push('/login');
-    setUser(user);
-    const { error } = await supabase.from('users').upsert({ id: user.id, email: user.email! }).select();
-    if (error) console.error('Error creating user:', error);
+    const { data, error } = await supabase.auth.getUser();
+
+    if (error || !data.user) {
+      console.error('[錯誤] 未登入或無法取得 user：', error);
+      setLoading(false); // <== 防止永遠卡載入
+      router.push('/login');
+      return;
+    }
+
+    setUser(data.user);
+
+    // 非阻塞的 user upsert
+    supabase
+      .from('users')
+      .upsert({ id: data.user.id, email: data.user.email! })
+      .then(({ error }) => {
+        if (error) console.error('[錯誤] 建立 user 失敗：', error);
+      });
   };
 
   const fetchItems = async () => {
@@ -61,12 +74,15 @@ export default function DashboardPage() {
         .from('items')
         .select('*, prompt_assets(image_url)')
         .order('created_at', { ascending: false });
+
       if (error) throw error;
+
       setItems(data || []);
       const allCategories = data?.flatMap(item => item.category || []) || [];
       setCategories(Array.from(new Set(allCategories)));
-    } catch {
+    } catch (err) {
       toast.error('載入項目失敗');
+      console.error('[錯誤] fetchItems:', err);
     } finally {
       setLoading(false);
     }
@@ -74,6 +90,7 @@ export default function DashboardPage() {
 
   const filterItems = () => {
     let filtered = items;
+
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       filtered = filtered.filter(item =>
@@ -82,9 +99,11 @@ export default function DashboardPage() {
         (item.summary || '').toLowerCase().includes(q)
       );
     }
+
     if (selectedCategory) {
       filtered = filtered.filter(item => item.category?.includes(selectedCategory));
     }
+
     setFilteredItems(filtered);
   };
 
@@ -95,17 +114,18 @@ export default function DashboardPage() {
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
+
     try {
       const results = await searchItems(searchQuery, user.id);
       setFilteredItems(results);
     } catch {
       const q = searchQuery.toLowerCase();
-      const filtered = items.filter(item =>
+      const fallback = items.filter(item =>
         (item.title || '').toLowerCase().includes(q) ||
         (item.raw_content || '').toLowerCase().includes(q) ||
         (item.summary || '').toLowerCase().includes(q)
       );
-      setFilteredItems(filtered);
+      setFilteredItems(fallback);
     }
   };
 
@@ -149,7 +169,7 @@ export default function DashboardPage() {
                 placeholder="搜尋知識庫..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                 className="pl-10"
               />
             </div>
@@ -205,7 +225,6 @@ export default function DashboardPage() {
               <Link key={item.id} href={`/items/${item.id}`}>
                 <Card className="h-full hover:shadow-lg transition-shadow cursor-pointer">
                   <CardHeader>
-                    {/* 顯示首張圖片 */}
                     {item.prompt_assets?.[0]?.image_url && (
                       <div className="mb-3">
                         <img
@@ -215,7 +234,6 @@ export default function DashboardPage() {
                         />
                       </div>
                     )}
-
                     <div className="flex items-start justify-between">
                       <div className="flex items-center space-x-2">
                         {item.type === 'prompt' ? (
@@ -228,7 +246,6 @@ export default function DashboardPage() {
                         </Badge>
                       </div>
                     </div>
-
                     <CardTitle className="text-lg leading-tight">
                       {truncateText(item.title || '', 60)}
                     </CardTitle>
@@ -238,7 +255,6 @@ export default function DashboardPage() {
                       </CardDescription>
                     )}
                   </CardHeader>
-
                   <CardContent>
                     <div className="space-y-3">
                       {item.category && item.category.length > 0 && (
