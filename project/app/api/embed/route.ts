@@ -1,4 +1,3 @@
-// app/api/embed/route.ts
 import { NextResponse } from 'next/server';
 
 const openrouterKey = process.env.OPENROUTER_API_KEY!;
@@ -10,7 +9,6 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const text = (body?.text ?? '').toString();
-
     if (!text.trim()) {
       return NextResponse.json({ ok: false, error: 'missing text' }, { status: 400 });
     }
@@ -21,18 +19,12 @@ export async function POST(req: Request) {
         Authorization: `Bearer ${openrouterKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: EMBED_MODEL,
-        input: text,
-      }),
+      body: JSON.stringify({ model: EMBED_MODEL, input: text }),
     });
 
     if (!resp.ok) {
       const t = await resp.text().catch(() => '');
-      return NextResponse.json(
-        { ok: false, error: `embedding_failed: ${t}` },
-        { status: 502 }
-      );
+      return NextResponse.json({ ok: false, error: `embedding_failed: ${t}` }, { status: 502 });
     }
 
     const data = await resp.json();
@@ -40,7 +32,6 @@ export async function POST(req: Request) {
     if (!Array.isArray(embedding) || embedding.length === 0) {
       return NextResponse.json({ ok: false, error: 'empty_embedding' }, { status: 500 });
     }
-
     return NextResponse.json({ ok: true, embedding, dim: embedding.length });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? 'unknown_error' }, { status: 500 });
