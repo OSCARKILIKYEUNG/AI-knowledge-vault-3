@@ -9,19 +9,32 @@ import { Database } from '@/lib/supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AddItemModal } from '@/components/AddItemModal';
-import { SearchIcon, Plus, LogOut, Brain, FileText, Link as LinkIcon } from 'lucide-react';
+import {
+  SearchIcon,
+  Plus,
+  LogOut,
+  Brain,
+  FileText,
+  Link as LinkIcon,
+} from 'lucide-react';
 import { formatDate, truncateText } from '@/lib/utils';
 import { toast } from 'sonner';
-import { searchItems } from '@/lib/api';
 
-// 讓 TS 知道有 summary_tip 欄位
-type ItemRow = Database['public']['Tables']['items']['Row'] & {
+// 讓 items Row 可以包含 summary_tip（有的專案 schema 可能沒生成型別）
+type ItemBase = Database['public']['Tables']['items']['Row'] & {
   summary_tip?: string | null;
 };
-type ItemWithAssets = ItemRow & {
+// 關聯 prompt_assets 只取 image_url
+type ItemWithAssets = ItemBase & {
   prompt_assets?: { image_url: string | null }[];
 };
 
@@ -39,7 +52,10 @@ export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
   const [showAddModal, setShowAddModal] = useState(false);
 
-  const [summarizingId, setSummarizingId] = useState<number | null>(null); // 產生提示中
+  // 產生提示中的卡片 id（避免重複點擊）
+  const [summarizingId, setSummarizingId] = useState<number | null>(null);
+
+  // 防止 useEffect 重複初始化
   const booted = useRef(false);
 
   useEffect(() => {
@@ -48,10 +64,13 @@ export default function DashboardPage() {
 
     checkUser();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' && session) setUser(session.user);
-      else if (event === 'SIGNED_OUT') router.push('/login');
-    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        if (event === 'SIGNED_IN' && session) setUser(session.user);
+        else if (event === 'SIGNED_OUT') router.push('/login');
+      }
+    );
+
     return () => subscription.unsubscribe();
   }, [router]);
 
@@ -63,6 +82,7 @@ export default function DashboardPage() {
     filterItems();
   }, [items, searchQuery, selectedCategory]);
 
+  // 檢查登入，並確保 users 表有紀錄
   const checkUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
@@ -70,27 +90,31 @@ export default function DashboardPage() {
       return;
     }
     setUser(user);
-    // 確保 users 表有記錄
-    const { error } = await supabase.from('users').upsert({ id: user.id, email: user.email! }).select();
+    const { error } = await supabase
+      .from('users')
+      .upsert({ id: user.id, email: user.email! })
+      .select();
     if (error) console.error('Error creating user:', error);
   };
 
+  // 讀資料 + 關聯首張圖
   const fetchItems = async () => {
     try {
       setLoading(true);
-      // 把 summary_tip 一起選回來
       const { data, error } = await supabase
         .from('items')
-        .select('id, user_id, type, title, raw_content, url, summary, category, created_at, summary_tip, prompt_assets(image_url)')
+        .select('*, prompt_assets(image_url)')
         .order('created_at', { ascending: false });
 
       if (error) throw error;
 
-      setItems((data as ItemWithAssets[]) || []);
+      const list = (data as ItemWithAssets[]) || [];
+      setItems(list);
 
-      // 分類清單
-      const allCategories = (data || []).flatMap((it: any) => it.category || []);
+      // 產出分類
+      const allCategories = list.flatMap((it) => it.category || []);
       setCategories(Array.from(new Set(allCategories)));
+      setFilteredItems(list);
     } catch (e) {
       console.error(e);
       toast.error('載入項目失敗');
@@ -99,20 +123,15 @@ export default function DashboardPage() {
     }
   };
 
+  // 僅就地篩選（不打 API）
   const filterItems = () => {
     let filtered = items;
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
+    if (selectedCategory) {
       filtered = filtered.filter((item) =>
-        (item.title || '').toLowerCase().includes(q) ||
-        (item.raw_content || '').toLowerCase().includes(q) ||
-        (item.summary || '').toLowerCase().includes(q) ||
-        (item.summary_tip || '').toLowerCase().includes(q)
+        item.category?.includes(selectedCategory)
       );
     }
-    if (selectedCategory) {
-      filtered = filtered.filter((item) => item.category?.includes(selectedCategory));
-    }
+    // 關鍵字由「標題搜尋」按鈕觸發，這邊不主動處理
     setFilteredItems(filtered);
   };
 
@@ -121,28 +140,39 @@ export default function DashboardPage() {
     router.push('/');
   };
 
-const [searching, setSearching] = useState(false);
-
-const handleSearch = async () => {
-  if (!searchQuery.trim()) return;
-  if (!user?.id) {
-    toast.error('尚未登入');
-    return;
+  // ===== 搜尋：A. 標題搜尋（只查 title；不打 AI） =====
+  function handleKeywordSearch() {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) {
+      setFilteredItems(items);
+      return;
+    }
+    const r = items.filter((it) =>
+      (it.title || '').toLowerCase().includes(q)
+    );
+    setFilteredItems(r);
   }
-  try {
-    setSearching(true);
-    const results = await searchItems(searchQuery, user.id);
-    setFilteredItems(results as any);
-    toast.success(`AI 搜尋完成，共 ${results.length} 筆`);
-  } catch (e: any) {
-    console.error(e);
-    toast.error('AI 搜尋失敗');
-  } finally {
-    setSearching(false);
-  }
-};
 
-  // 呼叫 /api/summarize 產生 30 字提示
+  // ===== 搜尋：B. AI 搜尋（語意 + 向量；呼叫 /api/search）=====
+  async function handleAISearch() {
+    if (!searchQuery.trim()) return;
+    try {
+      const res = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: searchQuery, userId: user.id }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        throw new Error(json?.error || 'AI 搜尋失敗');
+      }
+      setFilteredItems(json.results || []);
+    } catch (e: any) {
+      toast.error(e?.message ?? 'AI 搜尋失敗');
+    }
+  }
+
+  // ===== 卡片「提示」：呼叫 /api/summarize，產生 30 字內摘要（含圖片）=====
   async function makeTip(itemId: number) {
     try {
       setSummarizingId(itemId);
@@ -152,8 +182,11 @@ const handleSearch = async () => {
         body: JSON.stringify({ itemId }),
       });
       const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || '提示失敗');
-      await fetchItems(); // 重新抓資料更新 summary_tip
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error || '提示失敗');
+      }
+      // 重新取資料，更新 summary_tip
+      await fetchItems();
       toast.success('已產生提示');
     } catch (e: any) {
       toast.error(e?.message ?? '提示失敗');
@@ -195,20 +228,28 @@ const handleSearch = async () => {
       </header>
 
       <div className="container mx-auto px-4 py-8">
-        {/* Search + Actions */}
+        {/* Search & Actions */}
         <div className="mb-8 space-y-4">
           <div className="flex gap-4">
             <div className="flex-1 relative">
               <SearchIcon className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
               <Input
-                placeholder="搜尋知識庫..."
+                placeholder="輸入關鍵字（僅查標題）或語意描述（AI 搜尋）..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                onKeyDown={(e) => {
+                  // Enter 預設做「標題搜尋」
+                  if (e.key === 'Enter') handleKeywordSearch();
+                }}
                 className="pl-10"
               />
             </div>
-            <Button onClick={handleSearch}>搜尋</Button>
+
+            <Button onClick={handleKeywordSearch}>標題搜尋</Button>
+            <Button variant="outline" onClick={handleAISearch}>
+              AI 搜尋
+            </Button>
+
             <Button onClick={() => setShowAddModal(true)}>
               <Plus className="h-4 w-4 mr-2" />
               新增項目
@@ -247,7 +288,9 @@ const handleSearch = async () => {
               {items.length === 0 ? '開始建立您的知識庫' : '找不到相關項目'}
             </h3>
             <p className="text-gray-600 mb-4">
-              {items.length === 0 ? '新增您的第一個項目來開始使用 AI Knowledge Vault' : '嘗試不同的搜尋關鍵字或篩選條件'}
+              {items.length === 0
+                ? '新增您的第一個項目來開始使用 AI Knowledge Vault'
+                : '請嘗試不同的關鍵字、篩選或使用 AI 搜尋'}
             </p>
             {items.length === 0 && (
               <Button onClick={() => setShowAddModal(true)}>
@@ -290,9 +333,12 @@ const handleSearch = async () => {
                         variant="outline"
                         size="sm"
                         onClick={(e) => {
-                          e.preventDefault(); // 不要跳到詳情頁
-                          if (typeof item.id === 'number') makeTip(item.id);
-                          else toast.error('無效的項目 ID');
+                          e.preventDefault();
+                          if (typeof item.id === 'number') {
+                            makeTip(item.id);
+                          } else {
+                            toast.error('無效的項目 ID');
+                          }
                         }}
                         disabled={summarizingId === (item.id as number)}
                         title={item.summary_tip || '按一下產生提示'}
@@ -301,20 +347,24 @@ const handleSearch = async () => {
                       </Button>
                     </div>
 
-                    <CardTitle className="text-lg leading-tight mt-2" title={item.title || ''}>
+                    {/* 標題（hover 顯示完整） */}
+                    <CardTitle
+                      className="text-lg leading-tight mt-2"
+                      title={item.title || ''}
+                    >
                       {truncateText(item.title || '', 60)}
                     </CardTitle>
 
-                    {/* 顯示 30 字提示：放 title 讓 hover 看全文 */}
+                    {/* 30 字內提示 */}
                     {item.summary_tip && (
-                      <CardDescription className="text-sm" title={item.summary_tip || ''}>
-                        {truncateText(item.summary_tip || '', 60)}
+                      <CardDescription className="text-sm" title={item.summary_tip}>
+                        {truncateText(item.summary_tip, 60)}
                       </CardDescription>
                     )}
 
-                    {/* 原本 AI 摘要（可選） */}
+                    {/* AI 摘要（可留） */}
                     {item.summary && (
-                      <CardDescription className="text-sm" title={item.summary || ''}>
+                      <CardDescription className="text-sm">
                         {truncateText(item.summary || '', 100)}
                       </CardDescription>
                     )}
@@ -336,7 +386,9 @@ const handleSearch = async () => {
                           )}
                         </div>
                       )}
-                      <div className="text-xs text-gray-500">{formatDate(item.created_at)}</div>
+                      <div className="text-xs text-gray-500">
+                        {formatDate(item.created_at)}
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
