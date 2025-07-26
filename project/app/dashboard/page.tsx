@@ -1,11 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { Database } from '@/lib/supabaseClient';
-
 import { Brain, FileText, Link as LinkIcon, LogOut, SearchIcon, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,21 +24,21 @@ export const dynamic = 'force-dynamic';
 export default function DashboardPage() {
   const router = useRouter();
 
-  // user + data
+  // 資料
   const [user, setUser] = useState<any>(null);
   const [items, setItems] = useState<ItemWithAssets[]>([]);
   const [filtered, setFiltered] = useState<ItemWithAssets[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
 
-  // ui
+  // UI 狀態
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
 
-  // summaries in memory (即時顯示)
-  const [hintById, setHintById] = useState<Record<number, string>>({});
-  const [summarizingId, setSummarizingId] = useState<number | null>(null);
+  // 提示內容：用「字串鍵」避免 bigint/number 型別不一致
+  const [hintById, setHintById] = useState<Record<string, string>>({});
+  const [summarizingId, setSummarizingId] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -51,7 +50,8 @@ export default function DashboardPage() {
       setUser(user);
       await supabase.from('users').upsert({ id: user.id, email: user.email || '' }).select();
       await loadItems();
-    })().catch(() => {
+    })().catch((e) => {
+      console.error(e);
       toast.error('載入失敗');
       router.replace('/login');
     });
@@ -62,29 +62,37 @@ export default function DashboardPage() {
       setLoading(true);
       const { data, error } = await supabase
         .from('items')
-        .select('*, prompt_assets(image_url)')
+        .select('id,user_id,type,title,raw_content,url,summary,category,created_at, prompt_assets(image_url)')
         .order('created_at', { ascending: false });
 
       if (error) throw error;
 
       const list = (data || []) as ItemWithAssets[];
       setItems(list);
-      // 將 DB 既有的 summary 帶入本地狀態
-      const seed: Record<number, string> = {};
-      list.forEach(i => { if (i.summary) seed[i.id as number] = i.summary; });
+
+      // 把 DB 中既有 summary 帶入本地
+      const seed: Record<string, string> = {};
+      list.forEach(i => {
+        const key = String(i.id);
+        if (i.summary) seed[key] = i.summary;
+      });
       setHintById(seed);
 
+      // 類別
       const allCats = list.flatMap(i => i.category || []);
       setCategories(Array.from(new Set(allCats)));
+
+      // 初始過濾結果
       setFiltered(list);
     } catch (e) {
+      console.error(e);
       toast.error('讀取項目失敗');
     } finally {
       setLoading(false);
     }
   };
 
-  // filter
+  // 搜尋 & 篩選
   useEffect(() => {
     let arr = items;
     if (searchQuery.trim()) {
@@ -92,36 +100,38 @@ export default function DashboardPage() {
       arr = arr.filter(i =>
         (i.title || '').toLowerCase().includes(q) ||
         (i.raw_content || '').toLowerCase().includes(q) ||
-        (i.summary || '').toLowerCase().includes(q)
+        (i.summary || '').toLowerCase().includes(q) ||
+        (hintById[String(i.id)] || '').toLowerCase().includes(q)
       );
     }
     if (selectedCategory) {
       arr = arr.filter(i => i.category?.includes(selectedCategory));
     }
     setFiltered(arr);
-  }, [items, searchQuery, selectedCategory]);
+  }, [items, searchQuery, selectedCategory, hintById]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     router.replace('/login');
   };
 
-  // 產生 AI 提示（包含圖片 + 內容，字數約 30 內），即時顯示並寫回 DB
+  // 產生 AI 提示（包含圖片 + 內容，≈30字），即時顯示 + 寫回 DB
   const handleSummarize = async (item: ItemWithAssets) => {
+    const key = String(item.id);
     if (summarizingId) return;
-    setSummarizingId(item.id as number);
+    setSummarizingId(key);
 
     try {
       const images =
         (item.prompt_assets || [])
           .map(a => a.image_url)
-          .filter(Boolean)
-          .slice(0, 2) as string[];
+          .filter((u): u is string => !!u)
+          .slice(0, 2);
 
       const payload = {
         title: item.title || '',
         description: (item.raw_content || item.url || ''),
-        images,
+        images, // 後端會判斷是否有圖，沒有就只用文字
       };
 
       const res = await fetch('/api/summarize', {
@@ -136,29 +146,28 @@ export default function DashboardPage() {
         return;
       }
 
-      const summary: string = data.summary || '';
-      const idNum = item.id as number;
+      const summary: string = data.summary?.trim() || '（無摘要）';
 
-      // 1) 即時顯示在卡片
-      setHintById(prev => ({ ...prev, [idNum]: summary }));
-      // 讓 filtered/items 也更新（非必要，但可確保子組件重渲染）
-      setItems(prev =>
-        prev.map(it => (it.id === idNum ? { ...it, summary } : it))
-      );
-      setFiltered(prev =>
-        prev.map(it => (it.id === idNum ? { ...it, summary } : it))
-      );
+      // 1) 先即時顯示在畫面
+      setHintById(prev => ({ ...prev, [key]: summary }));
+
+      // 同步 items / filtered 的 summary 欄位（用字串 id 比對）
+      setItems(prev => prev.map(it => (String(it.id) === key ? { ...it, summary } : it)));
+      setFiltered(prev => prev.map(it => (String(it.id) === key ? { ...it, summary } : it)));
 
       // 2) 寫回 DB
       const { error: upErr } = await supabase
         .from('items')
         .update({ summary })
-        .eq('id', idNum);
+        .eq('id', item.id as any); // bigint/number 讓 Supabase 自行處理
 
-      if (upErr) console.warn('寫回摘要失敗：', upErr.message);
+      if (upErr) {
+        console.warn('寫回摘要失敗：', upErr.message);
+      }
 
       toast.success(`已產生提示：${summary.slice(0, 20)}${summary.length > 20 ? '…' : ''}`);
     } catch (e: any) {
+      console.error(e);
       toast.error(`提示失敗：${e?.message || String(e)}`);
     } finally {
       setSummarizingId(null);
@@ -177,7 +186,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <TooltipProvider delayDuration={150}>
+    <TooltipProvider delayDuration={120}>
       <div className="min-h-screen bg-gray-50">
         {/* Header */}
         <header className="bg-white border-b">
@@ -209,7 +218,6 @@ export default function DashboardPage() {
                   placeholder="搜尋知識庫..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && /* 即時篩選已生效 */ null}
                   className="pl-10"
                 />
               </div>
@@ -259,18 +267,19 @@ export default function DashboardPage() {
           ) : (
             <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
               {filtered.map((item) => {
+                const key = String(item.id);
                 const firstImage = item.prompt_assets?.[0]?.image_url || '';
-                const hint = hintById[item.id as number];
+                const hint = hintById[key] || item.summary || '';
 
                 return (
-                  <Card key={item.id} className="h-full hover:shadow-lg transition-shadow">
+                  <Card key={key} className="h-full hover:shadow-lg transition-shadow">
                     <CardHeader>
                       {/* 首張圖片 */}
                       {firstImage && (
                         <div className="mb-3">
                           <img
                             src={firstImage}
-                            alt="預覽圖"
+                            alt={item.title || '預覽圖'}
                             className="w-full h-40 object-cover rounded-md"
                           />
                         </div>
@@ -286,15 +295,15 @@ export default function DashboardPage() {
                             {item.type === 'prompt' ? '提示' : '連結'}
                           </Badge>
 
-                          {/* 一鍵 AI 摘要（移除按鈕 tooltip，避免誤會） */}
+                          {/* AI 提示按鈕 */}
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => handleSummarize(item)}
-                            disabled={summarizingId === (item.id as number)}
+                            disabled={summarizingId === key}
                           >
                             <Sparkles className="h-4 w-4 mr-1" />
-                            {summarizingId === (item.id as number) ? '產生中…' : '提示'}
+                            {summarizingId === key ? '產生中…' : '提示'}
                           </Button>
                         </div>
 
@@ -308,18 +317,22 @@ export default function DashboardPage() {
                         {truncateText(item.title || '', 60)}
                       </CardTitle>
 
-                      {/* 卡片摘要（30 字），hover 看全文 */}
-                      {(hint || item.summary) && (
+                      {/* 摘要列：沒有就顯示「尚未產生提示」 */}
+                      {hint ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <CardDescription className="text-sm cursor-help">
-                              {truncateText(hint || item.summary || '', 30)}
+                              {truncateText(hint, 30)}
                             </CardDescription>
                           </TooltipTrigger>
                           <TooltipContent className="max-w-xs">
-                            {hint || item.summary}
+                            {hint}
                           </TooltipContent>
                         </Tooltip>
+                      ) : (
+                        <CardDescription className="text-sm text-gray-400">
+                          尚未產生提示
+                        </CardDescription>
                       )}
                     </CardHeader>
 
