@@ -11,7 +11,15 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AddItemModal } from '@/components/AddItemModal';
-import { Brain, FileText, Link as LinkIcon, LogOut, Plus, SearchIcon, Sparkles } from 'lucide-react';
+import {
+  Brain,
+  FileText,
+  Link as LinkIcon,
+  LogOut,
+  Plus,
+  SearchIcon,
+  Sparkles,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
 
@@ -33,11 +41,13 @@ export default function DashboardPage() {
   const router = useRouter();
 
   const [user, setUser] = useState<any>(null);
+
   const [items, setItems] = useState<ItemWithAssets[]>([]);
-  const [filteredItems, setFilteredItems] = useState<ItemWithAssets[]>([]);
+  const [viewItems, setViewItems] = useState<ItemWithAssets[]>([]); // 畫面上顯示的結果（只在按鈕點擊時更新）
   const [categories, setCategories] = useState<string[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
+
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
 
@@ -57,6 +67,7 @@ export default function DashboardPage() {
         return;
       }
       setUser(user);
+      // 確保 users 表有記錄
       await supabase.from('users').upsert({ id: user.id, email: user.email ?? '' }).select();
 
       await fetchItems();
@@ -70,30 +81,23 @@ export default function DashboardPage() {
     return () => subscription.unsubscribe();
   }, [router]);
 
-  // 即時：只用標題過濾；類別篩選
-  useEffect(() => {
-    let list = [...items];
-    if (searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
-      list = list.filter((it) => (it.title ?? '').toLowerCase().includes(q));
-    }
-    if (selectedCategory) {
-      list = list.filter((it) => it.category?.includes(selectedCategory));
-    }
-    setFilteredItems(list);
-  }, [items, searchQuery, selectedCategory]);
-
   async function fetchItems() {
     try {
       const { data, error } = await supabase
         .from('items')
-        .select('id,user_id,type,title,raw_content,url,summary,summary_tip,category,created_at,prompt_assets(image_url)')
+        .select(
+          'id,user_id,type,title,raw_content,url,summary,summary_tip,category,created_at,prompt_assets(image_url)'
+        )
         .order('created_at', { ascending: false });
 
       if (error) throw error;
+
       const rows = (data ?? []) as ItemWithAssets[];
       setItems(rows);
+      // 預設顯示全部（未按任何搜尋鍵）
+      setViewItems(rows);
 
+      // 產出分類
       const cats = new Set<string>();
       rows.forEach((r) => (r.category ?? []).forEach((c) => cats.add(c)));
       setCategories(Array.from(cats));
@@ -103,9 +107,64 @@ export default function DashboardPage() {
     }
   }
 
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    router.push('/');
+  function applyCategoryFilter(list: ItemWithAssets[]) {
+    if (!selectedCategory) return list;
+    return list.filter((it) => it.category?.includes(selectedCategory));
+  }
+
+  // 一般搜尋：只在「標題」找關鍵字，需按下「搜尋」按鈕（或 Enter）才觸發
+  function handleKeywordSearch() {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) {
+      // 空字串 => 顯示全部（再套用類別篩選）
+      setViewItems(applyCategoryFilter(items));
+      return;
+    }
+    const base = items.filter((it) => (it.title ?? '').toLowerCase().includes(q));
+    setViewItems(applyCategoryFilter(base));
+  }
+
+  // AI 提示搜尋：呼叫 /api/ai-search，只用 summary_tip 做比對
+  async function runAISearch() {
+    const q = searchQuery.trim();
+    if (!q) {
+      toast.error('請先輸入要搜尋的關鍵字');
+      return;
+    }
+    if (!user?.id) {
+      toast.error('尚未登入');
+      return;
+    }
+    try {
+      setAiSearching(true);
+      const res = await fetch('/api/ai-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q, userId: user.id }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        toast.error(json?.error || 'AI 提示搜尋失敗');
+        setViewItems([]);
+        return;
+      }
+      const ids: number[] = Array.isArray(json?.ids) ? json.ids : [];
+      if (ids.length === 0) {
+        setViewItems([]);
+        toast.message('沒有匹配的提示');
+        return;
+      }
+      const map = new Map<number, ItemWithAssets>();
+      items.forEach((it) => map.set(it.id, it));
+      const ordered = ids.map((id) => map.get(id)).filter(Boolean) as ItemWithAssets[];
+      setViewItems(applyCategoryFilter(ordered));
+      toast.success(`提示搜尋完成，共 ${ordered.length} 筆`);
+    } catch (e) {
+      console.error(e);
+      toast.error('AI 提示搜尋發生錯誤');
+    } finally {
+      setAiSearching(false);
+    }
   }
 
   // 產生 / 重算 30 字提示（會納入最新圖片）
@@ -128,53 +187,15 @@ export default function DashboardPage() {
     }
   }
 
-  // AI 提示搜尋（僅 summary_tip）
-  async function runAISearch() {
-    const q = searchQuery.trim();
-    if (!q) {
-      toast.error('請先輸入要搜尋的關鍵字');
-      return;
-    }
-    if (!user?.id) {
-      toast.error('尚未登入');
-      return;
-    }
-    try {
-      setAiSearching(true);
-      const res = await fetch('/api/ai-search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q, userId: user.id }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json?.ok) {
-        toast.error(json?.error || 'AI 提示搜尋失敗');
-        setFilteredItems([]);
-        return;
-      }
-      const ids: number[] = Array.isArray(json?.ids) ? json.ids : [];
-      if (ids.length === 0) {
-        setFilteredItems([]);
-        toast.message('沒有匹配的提示');
-        return;
-      }
-      const map = new Map<number, ItemWithAssets>();
-      items.forEach((it) => map.set(it.id, it));
-      const ordered = ids.map((id) => map.get(id)).filter(Boolean) as ItemWithAssets[];
-      setFilteredItems(ordered);
-      toast.success(`提示搜尋完成，共 ${ordered.length} 筆`);
-    } catch (e) {
-      console.error(e);
-      toast.error('AI 提示搜尋發生錯誤');
-    } finally {
-      setAiSearching(false);
-    }
-  }
-
   function snippet(text: string | null, n = 20) {
     const t = (text ?? '').trim();
     if (!t) return '';
     return t.length <= n ? t : `${t.slice(0, n)}…`;
+  }
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.push('/');
   }
 
   if (loading) {
@@ -210,22 +231,29 @@ export default function DashboardPage() {
       </header>
 
       <div className="container mx-auto px-4 py-8">
-        {/* Search & Actions */}
+        {/* Search & Actions（不做即時篩選，只在按鈕時觸發） */}
         <div className="mb-8 space-y-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center">
             <div className="relative flex-1">
               <SearchIcon className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
               <Input
-                placeholder="標題關鍵字（即時過濾）"
+                placeholder="輸入關鍵字…（僅在按下按鈕時搜尋）"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleKeywordSearch();
+                }}
                 className="pl-10"
               />
             </div>
             <div className="flex gap-2">
-              <Button onClick={runAISearch} disabled={aiSearching}>
+              <Button onClick={handleKeywordSearch} title="只在標題中比對關鍵字">
+                <SearchIcon className="h-4 w-4 mr-1" />
+                搜尋
+              </Button>
+              <Button onClick={runAISearch} disabled={aiSearching} title="只用 AI 提示（summary_tip）做比對">
                 <Sparkles className="h-4 w-4 mr-1" />
-                {aiSearching ? '提示搜尋中…' : 'AI 提示搜尋（僅 summary_tip）'}
+                {aiSearching ? 'AI 搜尋中…' : 'AI 搜尋'}
               </Button>
               <Button onClick={() => setShowAddModal(true)}>
                 <Plus className="h-4 w-4 mr-2" />
@@ -240,7 +268,11 @@ export default function DashboardPage() {
               <Button
                 variant={selectedCategory === '' ? 'default' : 'outline'}
                 size="sm"
-                onClick={() => setSelectedCategory('')}
+                onClick={() => {
+                  setSelectedCategory('');
+                  // 類別改變時，重新對目前 viewItems 依最新類別過濾
+                  setViewItems((prev) => applyCategoryFilter(items.filter((i) => prev.some((p) => p.id === i.id)) || items));
+                }}
               >
                 全部
               </Button>
@@ -249,7 +281,12 @@ export default function DashboardPage() {
                   key={category}
                   variant={selectedCategory === category ? 'default' : 'outline'}
                   size="sm"
-                  onClick={() => setSelectedCategory(category)}
+                  onClick={() => {
+                    setSelectedCategory(category);
+                    setViewItems((prev) =>
+                      applyCategoryFilter(items.filter((i) => prev.some((p) => p.id === i.id)) || items)
+                    );
+                  }}
                 >
                   {category}
                 </Button>
@@ -258,15 +295,17 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Items Grid */}
-        {filteredItems.length === 0 ? (
+        {/* Items Grid：顯示 viewItems（只在按鈕觸發後改變） */}
+        {viewItems.length === 0 ? (
           <div className="text-center py-12">
             <Brain className="h-16 w-16 text-gray-300 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">
               {items.length === 0 ? '開始建立您的知識庫' : '找不到相關項目'}
             </h3>
             <p className="text-gray-600 mb-4">
-              {items.length === 0 ? '新增您的第一個項目來開始使用 AI Knowledge Vault' : '嘗試不同關鍵字或用 AI 提示搜尋'}
+              {items.length === 0
+                ? '新增您的第一個項目來開始使用 AI Knowledge Vault'
+                : '請嘗試不同關鍵字，或使用 AI 搜尋（summary_tip）'}
             </p>
             {items.length === 0 && (
               <Button onClick={() => setShowAddModal(true)}>
@@ -277,7 +316,7 @@ export default function DashboardPage() {
           </div>
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {filteredItems.map((item) => (
+            {viewItems.map((item) => (
               <Link key={item.id} href={`/items/${item.id}`}>
                 <Card className="h-full hover:shadow-lg transition-shadow cursor-pointer">
                   <CardHeader>
