@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
 
 import {
-  Brain, ArrowLeft, Copy, Trash2, ExternalLink, PencilLine, Upload, ImageIcon,
+  Brain, ArrowLeft, Copy, Trash2, ExternalLink, PencilLine, ImageOff
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -23,24 +23,19 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 
 type ItemRow = Database['public']['Tables']['items']['Row'];
-type AssetRow = { id?: number; image_url: string | null };
+type AssetRow = { id: number; image_url: string | null; storage_path: string | null };
 
 export default function ItemDetailPage() {
   const params = useParams();
   const router = useRouter();
-
-  const idParam = params?.id;
-  const itemId = useMemo(() => {
-    const raw = typeof idParam === 'string' ? idParam : Array.isArray(idParam) ? idParam[0] : '';
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : NaN;
-  }, [idParam]);
+  const rawId = typeof params?.id === 'string' ? params.id : Array.isArray(params?.id) ? params?.id[0] : '';
+  const itemId = useMemo(() => Number(rawId), [rawId]);
 
   const [loading, setLoading] = useState(true);
   const [item, setItem] = useState<ItemRow | null>(null);
   const [assets, setAssets] = useState<AssetRow[]>([]);
 
-  // 編輯 Modal 狀態
+  // 編輯
   const [openEdit, setOpenEdit] = useState(false);
   const [editType, setEditType] = useState<'prompt' | 'link'>('prompt');
   const [editTitle, setEditTitle] = useState('');
@@ -51,7 +46,7 @@ export default function ItemDetailPage() {
   const [newFiles, setNewFiles] = useState<FileList | null>(null);
 
   useEffect(() => {
-    if (!itemId || Number.isNaN(itemId)) {
+    if (!Number.isFinite(itemId)) {
       toast.error('無效的項目 ID');
       router.replace('/dashboard');
       return;
@@ -70,11 +65,11 @@ export default function ItemDetailPage() {
       }
       setItem(data);
 
-      const { data: imgs, error: imgErr } = await supabase
+      const { data: imgs } = await supabase
         .from('prompt_assets')
-        .select('id,image_url')
+        .select('id,image_url,storage_path')
         .eq('item_id', id);
-      if (!imgErr) setAssets(imgs || []);
+      setAssets(imgs || []);
     } catch (e) {
       console.error(e);
       toast.error('載入失敗');
@@ -84,7 +79,6 @@ export default function ItemDetailPage() {
     }
   };
 
-  // ===== 操作 =====
   const copyContent = async () => {
     if (!item) return;
     await navigator.clipboard.writeText(item.raw_content || '');
@@ -97,20 +91,38 @@ export default function ItemDetailPage() {
     toast.success('摘要已複製到剪貼簿');
   };
 
-  const handleDelete = async () => {
+  const handleDeleteItem = async () => {
     if (!item) return;
     if (!confirm('確定要刪除此項目？')) return;
     const { error } = await supabase.from('items').delete().eq('id', item.id as any);
-    if (error) {
-      console.error(error);
-      toast.error('刪除失敗（請確認 RLS/權限）');
-      return;
-    }
+    if (error) { toast.error('刪除失敗'); return; }
     toast.success('已刪除');
     router.replace('/dashboard');
   };
 
-  // ===== 編輯 =====
+  // 刪除單張圖片（DB + Storage）
+  const handleDeleteImage = async (asset: AssetRow) => {
+    if (!asset?.id) return;
+    if (!confirm('刪除此圖片？')) return;
+
+    // 先刪 DB
+    const { error: delErr } = await supabase.from('prompt_assets').delete().eq('id', asset.id);
+    if (delErr) { toast.error('刪除圖片資料失敗'); return; }
+
+    // 再刪 Storage（有 storage_path 才能刪）
+    if (asset.storage_path) {
+      const { error: rmErr } = await supabase.storage.from('prompt-images').remove([asset.storage_path]);
+      if (rmErr) {
+        // DB 已刪，Storage 失敗就提示但不 rollback
+        toast.error('Storage 檔案刪除失敗（已移除資料列）');
+      }
+    }
+
+    setAssets(prev => prev.filter(a => a.id !== asset.id));
+    toast.success('已刪除圖片');
+  };
+
+  // 開啟編輯
   const openEditModal = () => {
     if (!item) return;
     setEditType((item.type as 'prompt' | 'link') || 'prompt');
@@ -126,12 +138,7 @@ export default function ItemDetailPage() {
     if (!item) return;
     setEditLoading(true);
     try {
-      // 基本欄位
-      const cats = editCats
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean);
-
+      const cats = editCats.split(',').map(s => s.trim()).filter(Boolean);
       const patch: Partial<ItemRow> = {
         type: editType,
         title: editTitle || null,
@@ -142,66 +149,40 @@ export default function ItemDetailPage() {
 
       const { data: updated, error: upErr } = await supabase
         .from('items')
-        .update(patch)
-        .eq('id', item.id as any)
-        .select()
-        .single();
+        .update(patch).eq('id', item.id as any)
+        .select().single();
+      if (upErr) { toast.error('更新失敗'); return; }
 
-      if (upErr) {
-        console.error(upErr);
-        toast.error('更新失敗');
-        return;
-      }
-
-      // 上傳新圖片（可多張）
+      // 新增圖片
       if (editType === 'prompt' && newFiles && newFiles.length > 0) {
         const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          toast.error('尚未登入');
-          return;
-        }
+        if (!user) { toast.error('尚未登入'); return; }
 
-        const list: AssetRow[] = [];
+        const appended: AssetRow[] = [];
         for (const file of Array.from(newFiles)) {
-          if (!file.type.startsWith('image/')) {
-            toast.error(`僅支援圖片檔：${file.name}`);
-            continue;
-          }
-          if (file.size > 5 * 1024 * 1024) {
-            toast.error(`圖片過大（>5MB）：${file.name}`);
-            continue;
-          }
+          if (!file.type.startsWith('image/')) { toast.error(`僅支援圖片檔：${file.name}`); continue; }
+          if (file.size > 5 * 1024 * 1024) { toast.error(`圖片過大（>5MB）：${file.name}`); continue; }
+
           const path = `${user.id}/${item.id}-${Date.now()}-${file.name}`;
-          const { error: uploadErr } = await supabase
-            .storage
-            .from('prompt-images')
+          const { error: uploadErr } = await supabase.storage.from('prompt-images')
             .upload(path, file, { cacheControl: '3600', upsert: false });
-          if (uploadErr) {
-            console.error(uploadErr);
-            toast.error(`圖片上載失敗：${file.name}`);
-            continue;
-          }
+          if (uploadErr) { toast.error(`上載失敗：${file.name}`); continue; }
+
           const { data: pub } = supabase.storage.from('prompt-images').getPublicUrl(path);
           if (pub?.publicUrl) {
             const { data: ins, error: insErr } = await supabase
               .from('prompt_assets')
-              .insert({ item_id: item.id as any, image_url: pub.publicUrl })
-              .select()
-              .single();
-            if (!insErr && ins) list.push(ins as AssetRow);
+              .insert({ item_id: item.id as any, image_url: pub.publicUrl, storage_path: path })
+              .select().single();
+            if (!insErr && ins) appended.push(ins as AssetRow);
           }
         }
-        if (list.length > 0) {
-          setAssets(prev => [...prev, ...list]);
-        }
+        if (appended.length) setAssets(prev => [...prev, ...appended]);
       }
 
       setItem(updated as ItemRow);
       toast.success('已更新');
       setOpenEdit(false);
-    } catch (e) {
-      console.error(e);
-      toast.error('發生錯誤');
     } finally {
       setEditLoading(false);
     }
@@ -222,7 +203,7 @@ export default function ItemDetailPage() {
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="container mx-auto px-4 py-6">
-        {/* 頂部操作列 */}
+        {/* 頂部 */}
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Button variant="outline" asChild>
@@ -248,14 +229,13 @@ export default function ItemDetailPage() {
                 複製摘要
               </Button>
             )}
-            <Button variant="destructive" onClick={handleDelete}>
+            <Button variant="destructive" onClick={handleDeleteItem}>
               <Trash2 className="h-4 w-4 mr-2" />
               刪除
             </Button>
           </div>
         </div>
 
-        {/* 內容卡片 */}
         <Card className="mb-6">
           <CardHeader>
             <div className="flex items-center gap-2 mb-2">
@@ -264,28 +244,27 @@ export default function ItemDetailPage() {
               </Badge>
               {item.category && item.category.length > 0 && (
                 <div className="flex flex-wrap gap-1">
-                  {item.category.map((cat) => (
-                    <Badge key={cat} variant="outline" className="text-xs">
-                      {cat}
-                    </Badge>
+                  {item.category.map(cat => (
+                    <Badge key={cat} variant="outline" className="text-xs">{cat}</Badge>
                   ))}
                 </div>
               )}
             </div>
             <CardTitle className="text-xl">{item.title || '（無標題）'}</CardTitle>
             <p className="text-sm text-gray-500 mt-1">建立於：{formatDate(item.created_at)}</p>
+            {item.summary_tip && (
+              <p className="mt-2 text-sm text-blue-700 bg-blue-50 inline-block px-2 py-1 rounded">
+                提示：{item.summary_tip}
+              </p>
+            )}
           </CardHeader>
 
           <CardContent className="space-y-6">
             {item.url && (
               <div>
                 <h3 className="font-medium mb-2">原始連結</h3>
-                <a
-                  href={item.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 inline-flex items-center gap-1 hover:underline break-all"
-                >
+                <a href={item.url} target="_blank" rel="noopener noreferrer"
+                  className="text-blue-600 inline-flex items-center gap-1 hover:underline break-all">
                   {item.url}
                   <ExternalLink className="h-4 w-4" />
                 </a>
@@ -308,22 +287,29 @@ export default function ItemDetailPage() {
               </div>
             )}
 
-            {/* 圖片資產 */}
+            {/* 圖片清單（含刪除） */}
             {assets.length > 0 && (
               <div>
                 <h3 className="font-medium mb-2">圖片</h3>
                 <div className="grid gap-4 md:grid-cols-2">
-                  {assets
-                    .filter(a => a.image_url)
-                    .map((a, i) => (
-                      <div key={`${a.id ?? i}`} className="border rounded p-2 bg-white">
-                        <img
-                          src={a.image_url as string}
-                          alt="prompt asset"
-                          className="rounded max-h-64 w-full object-contain"
-                        />
-                      </div>
-                    ))}
+                  {assets.filter(a => a.image_url).map((a) => (
+                    <div key={a.id} className="border rounded p-2 bg-white relative">
+                      <img
+                        src={a.image_url as string}
+                        alt="prompt asset"
+                        className="rounded max-h-64 w-full object-contain"
+                      />
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="absolute top-2 right-2"
+                        onClick={() => handleDeleteImage(a)}
+                      >
+                        <ImageOff className="h-4 w-4 mr-1" />
+                        刪除
+                      </Button>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -334,12 +320,8 @@ export default function ItemDetailPage() {
       {/* 編輯 Modal */}
       <Dialog open={openEdit} onOpenChange={(v) => !editLoading && setOpenEdit(v)}>
         <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>編輯項目</DialogTitle>
-          </DialogHeader>
-
+          <DialogHeader><DialogTitle>編輯項目</DialogTitle></DialogHeader>
           <div className="space-y-4">
-            {/* 類型 */}
             <div className="space-y-2">
               <Label>類型</Label>
               <div className="flex gap-2">
@@ -348,17 +330,13 @@ export default function ItemDetailPage() {
                   variant={editType === 'prompt' ? 'default' : 'outline'}
                   size="sm"
                   onClick={() => setEditType('prompt')}
-                >
-                  Prompt
-                </Button>
+                >Prompt</Button>
                 <Button
                   type="button"
                   variant={editType === 'link' ? 'default' : 'outline'}
                   size="sm"
                   onClick={() => setEditType('link')}
-                >
-                  Link
-                </Button>
+                >Link</Button>
               </div>
             </div>
 
@@ -384,30 +362,16 @@ export default function ItemDetailPage() {
               <Input placeholder="例如：行銷, 個人成長" value={editCats} onChange={e => setEditCats(e.target.value)} />
             </div>
 
-            {/* 新增圖片（多張） */}
             {editType === 'prompt' && (
               <div className="space-y-2">
-                <Label className="flex items-center gap-2">
-                  <ImageIcon className="h-4 w-4" />
-                  新增圖片（可多選，單張 ≤ 5MB）
-                </Label>
-                <Input
-                  type="file"
-                  multiple
-                  accept="image/*"
-                  onChange={(e) => setNewFiles(e.target.files)}
-                />
-                <p className="text-xs text-gray-500">上傳的新圖片會附加在此項目。</p>
+                <Label>新增圖片（可多選，單張 ≤ 5MB）</Label>
+                <Input type="file" multiple accept="image/*" onChange={e => setNewFiles(e.target.files)} />
               </div>
             )}
 
             <div className="flex justify-end gap-2">
-              <Button variant="outline" disabled={editLoading} onClick={() => setOpenEdit(false)}>
-                取消
-              </Button>
-              <Button disabled={editLoading} onClick={saveEdit}>
-                {editLoading ? '儲存中…' : '儲存變更'}
-              </Button>
+              <Button variant="outline" disabled={editLoading} onClick={() => setOpenEdit(false)}>取消</Button>
+              <Button disabled={editLoading} onClick={saveEdit}>{editLoading ? '儲存中…' : '儲存變更'}</Button>
             </div>
           </div>
         </DialogContent>
