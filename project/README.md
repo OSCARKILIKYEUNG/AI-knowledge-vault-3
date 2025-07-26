@@ -11,7 +11,7 @@ A production-ready Next.js 14 application for intelligent knowledge management u
 - **Similar Items**: Find related content using cosine similarity
 - **Image Upload**: Support for images with Supabase Storage
 - **Responsive Design**: Apple-inspired clean UI with Tailwind CSS
-
+ 
 ## Tech Stack
 
 - **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind CSS
