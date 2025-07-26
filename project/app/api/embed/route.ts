@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server';
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
-const EMBED_MODEL = process.env.OPENROUTER_EMBED_MODEL || 'nomic-ai/nomic-embed-text-v1.5';
+const EMBED_MODEL = process.env.OPENROUTER_EMBED_MODEL || 'thenlper/gte-large';
 
 export const dynamic = 'force-dynamic';
 
