@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
@@ -25,19 +25,19 @@ export const dynamic = 'force-dynamic';
 export default function DashboardPage() {
   const router = useRouter();
 
-  // data
+  // user + data
   const [user, setUser] = useState<any>(null);
   const [items, setItems] = useState<ItemWithAssets[]>([]);
   const [filtered, setFiltered] = useState<ItemWithAssets[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
 
-  // ui state
+  // ui
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
 
-  // per-card summarize state
+  // summaries in memory (即時顯示)
   const [hintById, setHintById] = useState<Record<number, string>>({});
   const [summarizingId, setSummarizingId] = useState<number | null>(null);
 
@@ -49,7 +49,6 @@ export default function DashboardPage() {
         return;
       }
       setUser(user);
-      // upsert 使用者
       await supabase.from('users').upsert({ id: user.id, email: user.email || '' }).select();
       await loadItems();
     })().catch(() => {
@@ -70,24 +69,22 @@ export default function DashboardPage() {
 
       const list = (data || []) as ItemWithAssets[];
       setItems(list);
-      // 從 DB 帶回的 summary 先塞到本地 hint，之後點提示再覆蓋
-      const seedHints: Record<number, string> = {};
-      list.forEach(i => {
-        if (i.summary) seedHints[i.id as number] = i.summary;
-      });
-      setHintById(seedHints);
+      // 將 DB 既有的 summary 帶入本地狀態
+      const seed: Record<number, string> = {};
+      list.forEach(i => { if (i.summary) seed[i.id as number] = i.summary; });
+      setHintById(seed);
 
       const allCats = list.flatMap(i => i.category || []);
       setCategories(Array.from(new Set(allCats)));
       setFiltered(list);
-    } catch (e: any) {
+    } catch (e) {
       toast.error('讀取項目失敗');
     } finally {
       setLoading(false);
     }
   };
 
-  // 篩選
+  // filter
   useEffect(() => {
     let arr = items;
     if (searchQuery.trim()) {
@@ -109,17 +106,12 @@ export default function DashboardPage() {
     router.replace('/login');
   };
 
-  const handleSearch = () => {
-    // 已用 useEffect 做即時篩選；這裡留空或做 analytics
-  };
-
-  // 產生 AI 提示（30 字內），也會寫回 DB: items.summary
+  // 產生 AI 提示（包含圖片 + 內容，字數約 30 內），即時顯示並寫回 DB
   const handleSummarize = async (item: ItemWithAssets) => {
     if (summarizingId) return;
     setSummarizingId(item.id as number);
 
     try {
-      // 準備圖片（最多 2 張公開網址）
       const images =
         (item.prompt_assets || [])
           .map(a => a.image_url)
@@ -145,20 +137,27 @@ export default function DashboardPage() {
       }
 
       const summary: string = data.summary || '';
-      // 1) 即時顯示
-      setHintById(prev => ({ ...prev, [item.id as number]: summary }));
+      const idNum = item.id as number;
 
-      // 2) 寫回 DB（之後重整也有）
+      // 1) 即時顯示在卡片
+      setHintById(prev => ({ ...prev, [idNum]: summary }));
+      // 讓 filtered/items 也更新（非必要，但可確保子組件重渲染）
+      setItems(prev =>
+        prev.map(it => (it.id === idNum ? { ...it, summary } : it))
+      );
+      setFiltered(prev =>
+        prev.map(it => (it.id === idNum ? { ...it, summary } : it))
+      );
+
+      // 2) 寫回 DB
       const { error: upErr } = await supabase
         .from('items')
         .update({ summary })
-        .eq('id', item.id);
-      if (upErr) {
-        // 不阻塞 UI，提示即可
-        console.warn('寫回摘要失敗：', upErr.message);
-      } else {
-        toast.success('已產生提示');
-      }
+        .eq('id', idNum);
+
+      if (upErr) console.warn('寫回摘要失敗：', upErr.message);
+
+      toast.success(`已產生提示：${summary.slice(0, 20)}${summary.length > 20 ? '…' : ''}`);
     } catch (e: any) {
       toast.error(`提示失敗：${e?.message || String(e)}`);
     } finally {
@@ -178,7 +177,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <TooltipProvider delayDuration={200}>
+    <TooltipProvider delayDuration={150}>
       <div className="min-h-screen bg-gray-50">
         {/* Header */}
         <header className="bg-white border-b">
@@ -210,13 +209,11 @@ export default function DashboardPage() {
                   placeholder="搜尋知識庫..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  onKeyDown={(e) => e.key === 'Enter' && /* 即時篩選已生效 */ null}
                   className="pl-10"
                 />
               </div>
-              <Button onClick={() => setShowAdd(true)}>
-                新增項目
-              </Button>
+              <Button onClick={() => setShowAdd(true)}>新增項目</Button>
             </div>
 
             {/* Category filters */}
@@ -268,7 +265,7 @@ export default function DashboardPage() {
                 return (
                   <Card key={item.id} className="h-full hover:shadow-lg transition-shadow">
                     <CardHeader>
-                      {/* 圖片預覽（第一張） */}
+                      {/* 首張圖片 */}
                       {firstImage && (
                         <div className="mb-3">
                           <img
@@ -288,26 +285,20 @@ export default function DashboardPage() {
                           <Badge variant={item.type === 'prompt' ? 'default' : 'secondary'}>
                             {item.type === 'prompt' ? '提示' : '連結'}
                           </Badge>
-                          {/* 一鍵產生提示 */}
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleSummarize(item)}
-                                disabled={summarizingId === (item.id as number)}
-                              >
-                                <Sparkles className="h-4 w-4 mr-1" />
-                                {summarizingId === (item.id as number) ? '產生中…' : '提示'}
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              以 AI 產生 30 字內的極簡摘要（含圖片、內容）
-                            </TooltipContent>
-                          </Tooltip>
+
+                          {/* 一鍵 AI 摘要（移除按鈕 tooltip，避免誤會） */}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleSummarize(item)}
+                            disabled={summarizingId === (item.id as number)}
+                          >
+                            <Sparkles className="h-4 w-4 mr-1" />
+                            {summarizingId === (item.id as number) ? '產生中…' : '提示'}
+                          </Button>
                         </div>
 
-                        {/* 查看詳情 */}
+                        {/* 詳情頁 */}
                         <Button asChild size="sm" variant="ghost">
                           <Link href={`/items/${item.id}`}>詳情</Link>
                         </Button>
@@ -317,16 +308,16 @@ export default function DashboardPage() {
                         {truncateText(item.title || '', 60)}
                       </CardTitle>
 
-                      {/* 卡片上即時顯示摘要（30字），hover 看全文 */}
-                      {hint && (
+                      {/* 卡片摘要（30 字），hover 看全文 */}
+                      {(hint || item.summary) && (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <CardDescription className="text-sm cursor-help">
-                              {truncateText(hint, 30)}
+                              {truncateText(hint || item.summary || '', 30)}
                             </CardDescription>
                           </TooltipTrigger>
                           <TooltipContent className="max-w-xs">
-                            {hint}
+                            {hint || item.summary}
                           </TooltipContent>
                         </Tooltip>
                       )}
@@ -348,7 +339,9 @@ export default function DashboardPage() {
                             )}
                           </div>
                         )}
-                        <div className="text-xs text-gray-500">{formatDate(item.created_at)}</div>
+                        <div className="text-xs text-gray-500">
+                          {formatDate(item.created_at)}
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
