@@ -16,11 +16,12 @@ import { toast } from 'sonner';
 import Link from 'next/link';
 import { searchItems } from '@/lib/api';
 
-type Item = Database['public']['Tables']['items']['Row'];
+type ItemRow = Database['public']['Tables']['items']['Row'];
+type ItemWithAssets = ItemRow & { prompt_assets?: { image_url: string | null }[] };
 
 export default function DashboardPage() {
-  const [items, setItems] = useState<Item[]>([]);
-  const [filteredItems, setFilteredItems] = useState<Item[]>([]);
+  const [items, setItems] = useState<ItemWithAssets[]>([]);
+  const [filteredItems, setFilteredItems] = useState<ItemWithAssets[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
@@ -31,15 +32,10 @@ export default function DashboardPage() {
 
   useEffect(() => {
     checkUser();
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        if (event === 'SIGNED_IN' && session) {
-          setUser(session.user);
-        } else if (event === 'SIGNED_OUT') {
-          router.push('/login');
-        }
-      }
-    );
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_IN' && session) setUser(session.user);
+      else if (event === 'SIGNED_OUT') router.push('/login');
+    });
     return () => subscription.unsubscribe();
   }, []);
 
@@ -53,15 +49,9 @@ export default function DashboardPage() {
 
   const checkUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      router.push('/login');
-      return;
-    }
+    if (!user) return router.push('/login');
     setUser(user);
-    const { error } = await supabase
-      .from('users')
-      .upsert({ id: user.id, email: user.email! })
-      .select();
+    const { error } = await supabase.from('users').upsert({ id: user.id, email: user.email! }).select();
     if (error) console.error('Error creating user:', error);
   };
 
@@ -69,7 +59,7 @@ export default function DashboardPage() {
     try {
       const { data, error } = await supabase
         .from('items')
-        .select('*')
+        .select('*, prompt_assets(image_url)')
         .order('created_at', { ascending: false });
       if (error) throw error;
       setItems(data || []);
@@ -132,7 +122,6 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
       <header className="bg-white border-b">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center space-x-2">
@@ -152,7 +141,6 @@ export default function DashboardPage() {
       </header>
 
       <div className="container mx-auto px-4 py-8">
-        {/* Search and Actions */}
         <div className="mb-8 space-y-4">
           <div className="flex gap-4">
             <div className="flex-1 relative">
@@ -172,7 +160,6 @@ export default function DashboardPage() {
             </Button>
           </div>
 
-          {/* Category Filters */}
           {categories.length > 0 && (
             <div className="flex flex-wrap gap-2">
               <Button
@@ -196,7 +183,6 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Items Grid */}
         {filteredItems.length === 0 ? (
           <div className="text-center py-12">
             <Brain className="h-16 w-16 text-gray-300 mx-auto mb-4" />
@@ -219,6 +205,17 @@ export default function DashboardPage() {
               <Link key={item.id} href={`/items/${item.id}`}>
                 <Card className="h-full hover:shadow-lg transition-shadow cursor-pointer">
                   <CardHeader>
+                    {/* 顯示首圖 */}
+                    {item.prompt_assets?.[0]?.image_url && (
+                      <div className="mb-3">
+                        <img
+                          src={item.prompt_assets[0].image_url}
+                          alt="預覽圖"
+                          className="w-full h-32 object-cover rounded"
+                        />
+                      </div>
+                    )}
+
                     <div className="flex items-start justify-between">
                       <div className="flex items-center space-x-2">
                         {item.type === 'prompt' ? (
@@ -231,6 +228,7 @@ export default function DashboardPage() {
                         </Badge>
                       </div>
                     </div>
+
                     <CardTitle className="text-lg leading-tight">
                       {truncateText(item.title || '', 60)}
                     </CardTitle>
@@ -240,6 +238,7 @@ export default function DashboardPage() {
                       </CardDescription>
                     )}
                   </CardHeader>
+
                   <CardContent>
                     <div className="space-y-3">
                       {item.category && item.category.length > 0 && (
@@ -256,9 +255,7 @@ export default function DashboardPage() {
                           )}
                         </div>
                       )}
-                      <div className="text-xs text-gray-500">
-                        {formatDate(item.created_at)}
-                      </div>
+                      <div className="text-xs text-gray-500">{formatDate(item.created_at)}</div>
                     </div>
                   </CardContent>
                 </Card>
