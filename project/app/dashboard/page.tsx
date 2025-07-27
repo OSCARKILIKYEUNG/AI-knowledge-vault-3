@@ -23,6 +23,7 @@ import {
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
 
+// 資料型別
 type ItemWithAssets = {
   id: number;
   user_id: string;
@@ -43,7 +44,7 @@ export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
 
   const [items, setItems] = useState<ItemWithAssets[]>([]);
-  const [viewItems, setViewItems] = useState<ItemWithAssets[]>([]); // 畫面上顯示的結果（只在按鈕點擊時更新）
+  const [viewItems, setViewItems] = useState<ItemWithAssets[]>([]); // 畫面顯示結果（僅在按鈕時更新）
   const [categories, setCategories] = useState<string[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -112,11 +113,17 @@ export default function DashboardPage() {
     return list.filter((it) => it.category?.includes(selectedCategory));
   }
 
-  // 一般搜尋：只在「標題」找關鍵字，需按下「搜尋」按鈕（或 Enter）才觸發
-  function handleKeywordSearch() {
+  // 一行摘要：預設 80 字（中文 / 英文都 OK），長則截斷
+  function oneLine(text: string | null, n = 80) {
+    const t = (text ?? '').replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    return t.length <= n ? t : `${t.slice(0, n)}…`;
+  }
+
+  /** 搜尋主題：僅標題 */
+  function handleSearchTitle() {
     const q = searchQuery.trim().toLowerCase();
     if (!q) {
-      // 空字串 => 顯示全部（再套用類別篩選）
       setViewItems(applyCategoryFilter(items));
       return;
     }
@@ -124,7 +131,18 @@ export default function DashboardPage() {
     setViewItems(applyCategoryFilter(base));
   }
 
-  // AI 提示搜尋：呼叫 /api/ai-search，只用 summary_tip 做比對
+  /** 搜尋內容：僅 raw_content */
+  function handleSearchContent() {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) {
+      setViewItems(applyCategoryFilter(items));
+      return;
+    }
+    const base = items.filter((it) => (it.raw_content ?? '').toLowerCase().includes(q));
+    setViewItems(applyCategoryFilter(base));
+  }
+
+  /** AI 摘要搜尋：僅 summary_tip（由 /api/ai-search 負責相似度） */
   async function runAISearch() {
     const q = searchQuery.trim();
     if (!q) {
@@ -144,7 +162,7 @@ export default function DashboardPage() {
       });
       const json = await res.json();
       if (!res.ok || !json?.ok) {
-        toast.error(json?.error || 'AI 提示搜尋失敗');
+        toast.error(json?.error || 'AI 摘要搜尋失敗');
         setViewItems([]);
         return;
       }
@@ -158,10 +176,10 @@ export default function DashboardPage() {
       items.forEach((it) => map.set(it.id, it));
       const ordered = ids.map((id) => map.get(id)).filter(Boolean) as ItemWithAssets[];
       setViewItems(applyCategoryFilter(ordered));
-      toast.success(`提示搜尋完成，共 ${ordered.length} 筆`);
+      toast.success(`AI 摘要搜尋完成，共 ${ordered.length} 筆`);
     } catch (e) {
       console.error(e);
-      toast.error('AI 提示搜尋發生錯誤');
+      toast.error('AI 摘要搜尋發生錯誤');
     } finally {
       setAiSearching(false);
     }
@@ -185,12 +203,6 @@ export default function DashboardPage() {
     } finally {
       setSummarizingId(null);
     }
-  }
-
-  function snippet(text: string | null, n = 20) {
-    const t = (text ?? '').trim();
-    if (!t) return '';
-    return t.length <= n ? t : `${t.slice(0, n)}…`;
   }
 
   async function handleLogout() {
@@ -231,29 +243,33 @@ export default function DashboardPage() {
       </header>
 
       <div className="container mx-auto px-4 py-8">
-        {/* Search & Actions（不做即時篩選，只在按鈕時觸發） */}
+        {/* Search & Actions（不即時篩選，僅按鈕觸發） */}
         <div className="mb-8 space-y-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center">
             <div className="relative flex-1">
               <SearchIcon className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
               <Input
-                placeholder="輸入關鍵字…（僅在按下按鈕時搜尋）"
+                placeholder="輸入關鍵字⋯（按下按鈕才會搜尋）"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleKeywordSearch();
+                  if (e.key === 'Enter') handleSearchTitle(); // Enter 預設用「搜尋主題」
                 }}
                 className="pl-10"
               />
             </div>
-            <div className="flex gap-2">
-              <Button onClick={handleKeywordSearch} title="只在標題中比對關鍵字">
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={handleSearchTitle} title="只在標題中比對關鍵字">
                 <SearchIcon className="h-4 w-4 mr-1" />
-                搜尋
+                搜尋主題
               </Button>
-              <Button onClick={runAISearch} disabled={aiSearching} title="只用 AI 提示（summary_tip）做比對">
+              <Button variant="secondary" onClick={handleSearchContent} title="只在內容中比對關鍵字">
+                <SearchIcon className="h-4 w-4 mr-1" />
+                搜尋內容
+              </Button>
+              <Button onClick={runAISearch} disabled={aiSearching} title="只用 AI 摘要（summary_tip）做比對">
                 <Sparkles className="h-4 w-4 mr-1" />
-                {aiSearching ? 'AI 搜尋中…' : 'AI 搜尋'}
+                {aiSearching ? 'AI 搜尋中…' : 'AI 摘要搜尋'}
               </Button>
               <Button onClick={() => setShowAddModal(true)}>
                 <Plus className="h-4 w-4 mr-2" />
@@ -270,8 +286,7 @@ export default function DashboardPage() {
                 size="sm"
                 onClick={() => {
                   setSelectedCategory('');
-                  // 類別改變時，重新對目前 viewItems 依最新類別過濾
-                  setViewItems((prev) => applyCategoryFilter(items.filter((i) => prev.some((p) => p.id === i.id)) || items));
+                  setViewItems(applyCategoryFilter(items));
                 }}
               >
                 全部
@@ -284,7 +299,11 @@ export default function DashboardPage() {
                   onClick={() => {
                     setSelectedCategory(category);
                     setViewItems((prev) =>
-                      applyCategoryFilter(items.filter((i) => prev.some((p) => p.id === i.id)) || items)
+                      applyCategoryFilter(
+                        (prev.length ? prev : items).filter((i) =>
+                          (i.category ?? []).includes(category)
+                        )
+                      )
                     );
                   }}
                 >
@@ -295,7 +314,7 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Items Grid：顯示 viewItems（只在按鈕觸發後改變） */}
+        {/* Items Grid：顯示 viewItems */}
         {viewItems.length === 0 ? (
           <div className="text-center py-12">
             <Brain className="h-16 w-16 text-gray-300 mx-auto mb-4" />
@@ -305,7 +324,7 @@ export default function DashboardPage() {
             <p className="text-gray-600 mb-4">
               {items.length === 0
                 ? '新增您的第一個項目來開始使用 AI Knowledge Vault'
-                : '請嘗試不同關鍵字，或使用 AI 搜尋'}
+                : '請嘗試不同關鍵字，或使用 AI 摘要搜尋（summary_tip）'}
             </p>
             {items.length === 0 && (
               <Button onClick={() => setShowAddModal(true)}>
@@ -350,12 +369,12 @@ export default function DashboardPage() {
                         size="sm"
                         onClick={(e) => {
                           e.preventDefault();
-                          makeTip(item.id);
+                          setTimeout(() => makeTip(item.id), 0);
                         }}
                         disabled={summarizingId === item.id}
                         title={item.summary_tip || '按一下產生（或重算）提示'}
                       >
-                        {summarizingId === item.id ? '產生中…' : 'Prompt'}
+                        {summarizingId === item.id ? '產生中…' : '提示'}
                       </Button>
                     </div>
 
@@ -363,10 +382,10 @@ export default function DashboardPage() {
                       {item.title || '（無標題）'}
                     </CardTitle>
 
-                    {/* 內容前 20 字 */}
+                    {/* 內容一行（約 80 字） */}
                     {(item.raw_content ?? '').trim() && (
                       <CardDescription className="text-sm" title={item.raw_content ?? ''}>
-                        {snippet(item.raw_content, 20)}
+                        {oneLine(item.raw_content, 80)}
                       </CardDescription>
                     )}
 
@@ -380,9 +399,7 @@ export default function DashboardPage() {
                     {/* 長摘要（若有） */}
                     {(item.summary ?? '').trim() && (
                       <CardDescription className="text-sm" title={item.summary ?? ''}>
-                        {((item.summary as string).length > 100)
-                          ? `${(item.summary as string).slice(0, 100)}…`
-                          : (item.summary as string)}
+                        {oneLine(item.summary, 120)}
                       </CardDescription>
                     )}
                   </CardHeader>
