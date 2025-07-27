@@ -2,9 +2,7 @@
 
 import { useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle,
-} from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -17,6 +15,13 @@ interface AddItemModalProps {
   onItemAdded: () => void;
 }
 
+type LinkPreview = {
+  title?: string;
+  description?: string;
+  image?: string;
+  url?: string;
+};
+
 export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalProps) {
   const [type, setType] = useState<'prompt' | 'link'>('prompt');
   const [title, setTitle] = useState('');
@@ -24,7 +29,52 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
   const [url, setUrl] = useState('');
   const [categoryInput, setCategoryInput] = useState('');
   const [files, setFiles] = useState<FileList | null>(null);
+
   const [loading, setLoading] = useState(false);
+
+  // Link 預覽相關
+  const [preview, setPreview] = useState<LinkPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const safeName = (name: string) =>
+    name.replace(/\s+/g, '-').replace(/[^\w.\-]/g, '').toLowerCase();
+
+  async function fetchLinkPreview() {
+    if (!url.trim()) {
+      toast.error('請先輸入網址');
+      return;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      toast.error('網址格式不正確，請以 http(s):// 開頭');
+      return;
+    }
+
+    try {
+      setPreviewLoading(true);
+      const res = await fetch('/api/link-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || '取得預覽失敗');
+      }
+
+      const p: LinkPreview = json.preview || {};
+      setPreview(p);
+
+      // 自動帶入標題/描述（可被使用者覆寫）
+      if (!title && p.title) setTitle(p.title);
+      if (!rawContent && p.description) setRawContent(p.description);
+      toast.success('已取得連結預覽');
+    } catch (e: any) {
+      console.error(e);
+      toast.error(e?.message ?? '取得預覽失敗');
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
 
   const handleSubmit = async () => {
     if (loading) return;
@@ -37,17 +87,17 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
         return;
       }
 
-      // 驗證網址格式
+      // 1) 基本驗證
       if (type === 'link' && url && !/^https?:\/\//i.test(url)) {
-        toast.error('網址格式錯誤，請以 http(s):// 開頭');
+        toast.error('網址格式不正確，請以 http(s):// 開頭');
         return;
       }
 
-      // 驗證圖片格式與大小
-      if (type === 'prompt' && files) {
+      // 驗證圖片
+      if (files && files.length > 0) {
         for (const f of Array.from(files)) {
           if (!f.type.startsWith('image/')) {
-            toast.error(`僅支援圖片檔：${f.name}`);
+            toast.error(`僅支援圖片檔，檔案：${f.name}`);
             return;
           }
           if (f.size > 5 * 1024 * 1024) {
@@ -59,10 +109,10 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
 
       const categories = categoryInput
         .split(',')
-        .map(c => c.trim())
+        .map((c) => c.trim())
         .filter(Boolean);
 
-      // 建立資料項目
+      // 2) 建立 item
       const { data: insertData, error: insertError } = await supabase
         .from('items')
         .insert({
@@ -70,27 +120,24 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
           type,
           title: title || null,
           raw_content: rawContent || null,
-          url: type === 'link' ? url : null,
+          url: type === 'link' ? (url || null) : null,
           category: categories.length ? categories : null,
         })
         .select()
         .single();
 
       if (insertError || !insertData) {
-        console.error(insertError);
-        toast.error('新增項目失敗');
+        console.error('Insert error:', insertError);
+        toast.error('建立項目失敗：' + (insertError?.message ?? '未知錯誤'));
         return;
       }
 
-      // 上傳圖片
-      if (type === 'prompt' && files) {
-        const succeed: string[] = [];
+      // 3) 上傳使用者選擇的圖片（多張）
+      if (files && files.length > 0) {
         const failed: string[] = [];
-
-        const safeName = (name: string) =>
-          name.replace(/\s+/g, '-').replace(/[^\w.\-]/g, '').toLowerCase();
-
+        const succeed: string[] = [];
         let index = 0;
+
         for (const file of Array.from(files)) {
           index += 1;
           const path = `${user.id}/${insertData.id}-${Date.now()}-${index}-${safeName(file.name)}`;
@@ -98,7 +145,10 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
           const { error: uploadError } = await supabase
             .storage
             .from('prompt-images')
-            .upload(path, file, { cacheControl: '3600', upsert: false });
+            .upload(path, file, {
+              cacheControl: '3600',
+              upsert: false,
+            });
 
           if (uploadError) {
             console.error(uploadError);
@@ -115,7 +165,6 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
                 image_url: pub.publicUrl,
                 storage_path: path,
               });
-
             if (assetError) {
               console.error(assetError);
               failed.push(file.name);
@@ -127,15 +176,28 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
           }
         }
 
-        if (succeed.length) {
-          toast.success(`成功上傳圖片：${succeed.join('、')}`);
-        }
-        if (failed.length) {
-          toast.error(`失敗圖片：${failed.join('、')}`);
+        if (succeed.length) toast.success(`圖片已上傳：${succeed.join('、')}`);
+        if (failed.length) toast.error(`有部分圖片失敗：${failed.join('、')}`);
+      }
+
+      // 4) 若是 Link 類型，且有預覽圖，直接把外部 image URL 存進 prompt_assets（不下載）
+      if (type === 'link' && preview?.image) {
+        const { error: assetError } = await supabase
+          .from('prompt_assets')
+          .insert({
+            item_id: insertData.id,
+            image_url: preview.image, // 外部 URL，先直接引用
+            storage_path: null,       // 若未下載到 Storage，此欄位可為 null
+          });
+
+        if (assetError) {
+          console.error(assetError);
+          // 不阻塞流程，只提示
+          toast.message('預覽圖片未能寫入資料庫（不影響項目建立）');
         }
       }
 
-      // === 重要 === 呼叫 API：自動產生摘要、embedding、AI提示
+      // 5) 非同步處理：摘要 / 向量（如果你使用） & 30字提示（圖片/連結皆會被納入）
       fetch('/api/process-item', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -148,7 +210,7 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
         body: JSON.stringify({ itemId: insertData.id }),
       }).catch(() => {});
 
-      toast.success('項目已新增，AI 處理中');
+      toast.success('已新增項目');
       setTimeout(() => onItemAdded(), 800);
       onOpenChange(false);
 
@@ -159,63 +221,128 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
       setUrl('');
       setCategoryInput('');
       setFiles(null);
+      setPreview(null);
     } catch (e: any) {
       console.error(e);
-      toast.error(`錯誤：${e?.message ?? '未知原因'}`);
+      toast.error('發生錯誤：' + (e?.message ?? '未知錯誤'));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <Dialog open={open} onOpenChange={v => !loading && onOpenChange(v)}>
+    <Dialog open={open} onOpenChange={(v) => !loading && onOpenChange(v)}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>新增項目</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4">
+          {/* 類型切換 */}
           <div className="flex gap-2">
-            <Button type="button" variant={type === 'prompt' ? 'default' : 'outline'} size="sm" onClick={() => setType('prompt')}>
+            <Button
+              type="button"
+              variant={type === 'prompt' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setType('prompt')}
+            >
               Prompt
             </Button>
-            <Button type="button" variant={type === 'link' ? 'default' : 'outline'} size="sm" onClick={() => setType('link')}>
+            <Button
+              type="button"
+              variant={type === 'link' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setType('link')}
+            >
               Link
             </Button>
           </div>
 
+          {/* 標題 */}
           <div className="space-y-2">
             <Label>標題</Label>
-            <Input value={title} onChange={e => setTitle(e.target.value)} placeholder="可留空" />
+            <Input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="可留空"
+            />
           </div>
 
+          {/* 網址（僅 Link 類型） */}
           {type === 'link' && (
             <div className="space-y-2">
               <Label>網址</Label>
-              <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://..." inputMode="url" />
+              <div className="flex gap-2">
+                <Input
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://..."
+                  inputMode="url"
+                />
+                <Button type="button" variant="outline" onClick={fetchLinkPreview} disabled={previewLoading}>
+                  {previewLoading ? '讀取中…' : '取得預覽'}
+                </Button>
+              </div>
+
+              {preview && (
+                <div className="mt-2 rounded border p-3 text-sm bg-gray-50">
+                  <div className="font-medium mb-1">預覽</div>
+                  {preview.image && (
+                    <img
+                      src={preview.image}
+                      alt="link preview"
+                      className="w-full max-h-40 object-cover rounded mb-2"
+                    />
+                  )}
+                  <div className="text-gray-800">
+                    <div><span className="text-gray-500">標題：</span>{preview.title || '—'}</div>
+                    <div className="mt-1 whitespace-pre-wrap">
+                      <span className="text-gray-500">描述：</span>{preview.description || '—'}
+                    </div>
+                  </div>
+                  <div className="mt-1 text-xs text-gray-500 break-all">{preview.url}</div>
+                </div>
+              )}
             </div>
           )}
 
+          {/* 內容 / 備註 */}
           <div className="space-y-2">
-            <Label>{type === 'prompt' ? 'Prompt 內容' : '備註 / 描述'}</Label>
-            <Textarea value={rawContent} onChange={e => setRawContent(e.target.value)} rows={4} />
+            <Label>{type === 'prompt' ? 'Prompt 內容' : '備註/描述'}</Label>
+            <Textarea
+              value={rawContent}
+              onChange={(e) => setRawContent(e.target.value)}
+              rows={4}
+              placeholder={type === 'prompt' ? '輸入你的提示內容…' : '補充說明…（會搭配連結預覽）'}
+            />
           </div>
 
+          {/* 分類 */}
           <div className="space-y-2">
             <Label>分類（逗號分隔）</Label>
-            <Input value={categoryInput} onChange={e => setCategoryInput(e.target.value)} placeholder="行銷, 策略" />
+            <Input
+              value={categoryInput}
+              onChange={(e) => setCategoryInput(e.target.value)}
+              placeholder="例如：行銷, 個人成長"
+            />
           </div>
 
-          {type === 'prompt' && (
-            <div className="space-y-2">
-              <Label>圖片（可多選）</Label>
-              <Input type="file" accept="image/*" multiple onChange={e => setFiles(e.target.files)} />
-              <p className="text-xs text-gray-500">支援多張，單張上限 5MB。</p>
-            </div>
-          )}
+          {/* 圖片（兩類型都可上傳） */}
+          <div className="space-y-2">
+            <Label>圖片（可多選）</Label>
+            <Input
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={(e) => setFiles(e.target.files)}
+            />
+            <p className="text-xs text-gray-500">支援多張，單張上限 5MB。</p>
+          </div>
 
           <div className="flex justify-end gap-2">
-            <Button variant="outline" disabled={loading} onClick={() => onOpenChange(false)}>取消</Button>
+            <Button variant="outline" disabled={loading} onClick={() => onOpenChange(false)}>
+              取消
+            </Button>
             <Button disabled={loading} onClick={handleSubmit}>
               {loading ? '處理中...' : '建立'}
             </Button>
