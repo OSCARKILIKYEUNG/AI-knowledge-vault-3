@@ -324,7 +324,7 @@ export default function DashboardPage() {
             <p className="text-gray-600 mb-4">
               {items.length === 0
                 ? '新增您的第一個項目來開始使用 AI Knowledge Vault'
-                : '請嘗試不同關鍵字，或使用 AI 摘要搜尋（summary_tip）'}
+                : '請嘗試不同關鍵字，或使用 AI 摘要搜尋'}
             </p>
             {items.length === 0 && (
               <Button onClick={() => setShowAddModal(true)}>
