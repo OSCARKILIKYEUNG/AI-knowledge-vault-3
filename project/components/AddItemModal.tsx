@@ -13,7 +13,7 @@ interface AddItemModalProps {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onItemAdded: () => void;
-}
+} 
 
 type LinkPreview = {
   title?: string;
