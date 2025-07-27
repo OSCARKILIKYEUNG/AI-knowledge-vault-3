@@ -56,9 +56,19 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url }),
       });
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
+
+      // 友善訊息：部分網站會拒絕（Threads/IG/FB）
+      if (res.status === 401 || res.status === 403) {
+        toast.info('此連結的網站拒絕預覽（如 Threads/IG/FB）。請手動填入標題與內容。');
+        setPreview(null);
+        return; // 不丟錯，讓使用者手動輸入
+      }
+
       if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || '取得預覽失敗');
+        toast.error(json?.error || '取得預覽失敗，請手動填入標題與內容');
+        setPreview(null);
+        return;
       }
 
       const p: LinkPreview = json.preview || {};
@@ -70,7 +80,8 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
       toast.success('已取得連結預覽');
     } catch (e: any) {
       console.error(e);
-      toast.error(e?.message ?? '取得預覽失敗');
+      toast.error('取得預覽失敗，請手動填入標題與內容');
+      setPreview(null);
     } finally {
       setPreviewLoading(false);
     }
@@ -180,24 +191,22 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
         if (failed.length) toast.error(`有部分圖片失敗：${failed.join('、')}`);
       }
 
-      // 4) 若是 Link 類型，且有預覽圖，直接把外部 image URL 存進 prompt_assets（不下載）
+      // 4) 若是 Link 類型且有預覽圖（外部 URL），也寫入 prompt_assets
       if (type === 'link' && preview?.image) {
         const { error: assetError } = await supabase
           .from('prompt_assets')
           .insert({
             item_id: insertData.id,
-            image_url: preview.image, // 外部 URL，先直接引用
-            storage_path: null,       // 若未下載到 Storage，此欄位可為 null
+            image_url: preview.image,
+            storage_path: null,
           });
-
         if (assetError) {
           console.error(assetError);
-          // 不阻塞流程，只提示
           toast.message('預覽圖片未能寫入資料庫（不影響項目建立）');
         }
       }
 
-      // 5) 非同步處理：摘要 / 向量（如果你使用） & 30字提示（圖片/連結皆會被納入）
+      // 5) 非同步：摘要/向量 & 30字提示（含圖片）
       fetch('/api/process-item', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -300,7 +309,7 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
                       <span className="text-gray-500">描述：</span>{preview.description || '—'}
                     </div>
                   </div>
-                  <div className="mt-1 text-xs text-gray-500 break-all">{preview.url}</div>
+                  <div className="mt-1 text-xs text-gray-500 break-all">{preview.url || url}</div>
                 </div>
               )}
             </div>
@@ -313,7 +322,7 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
               value={rawContent}
               onChange={(e) => setRawContent(e.target.value)}
               rows={4}
-              placeholder={type === 'prompt' ? '輸入你的提示內容…' : '補充說明…（會搭配連結預覽）'}
+              placeholder={type === 'prompt' ? '輸入你的提示內容…' : '補充說明…（拿不到預覽時，請在這裡填寫描述）'}
             />
           </div>
 
@@ -340,10 +349,10 @@ export function AddItemModal({ open, onOpenChange, onItemAdded }: AddItemModalPr
           </div>
 
           <div className="flex justify-end gap-2">
-            <Button variant="outline" disabled={loading} onClick={() => onOpenChange(false)}>
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
               取消
             </Button>
-            <Button disabled={loading} onClick={handleSubmit}>
+            <Button onClick={handleSubmit}>
               {loading ? '處理中...' : '建立'}
             </Button>
           </div>
