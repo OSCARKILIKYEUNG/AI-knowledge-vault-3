@@ -359,7 +359,7 @@ export default function DashboardPage() {
                           <LinkIcon className="h-5 w-5 text-green-600" />
                         )}
                         <Badge variant={item.type === 'prompt' ? 'default' : 'secondary'}>
-                          {item.type === 'prompt' ? 'Prompt' : '連結'}
+                          {item.type === 'prompt' ? 'Prompt' : 'Link'}
                         </Badge>
                       </div>
 
