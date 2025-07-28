@@ -263,7 +263,7 @@ export default function DashboardPage() {
                 <SearchIcon className="h-4 w-4 mr-1" />
                 搜尋主題
               </Button>
-              <Button variant="secondary" onClick={handleSearchContent} title="只在內容中比對關鍵字">
+              <Button variant="outline" onClick={handleSearchContent} title="只在內容中比對關鍵字">
                 <SearchIcon className="h-4 w-4 mr-1" />
                 搜尋內容
               </Button>
