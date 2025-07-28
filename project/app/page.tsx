@@ -146,7 +146,7 @@ export default function HomePage() {
             <div className="h-12 w-12 rounded-full bg-blue-50 flex items-center justify-center mb-4">
               <FileText className="h-6 w-6 text-blue-600" />
             </div>
-            <h3 className="font-semibold mb-2">智能摘要</h3>
+            <h3 className="font-semibold mb-2">AI智能摘要</h3>
             <p className="text-sm leading-6 text-gray-600">
               AI 自動為您的內容生成條理中文摘要，快速了解重點資訊。
             </p>
@@ -156,9 +156,9 @@ export default function HomePage() {
             <div className="h-12 w-12 rounded-full bg-green-50 flex items-center justify-center mb-4">
               <Search className="h-6 w-6 text-green-600" />
             </div>
-            <h3 className="font-semibold mb-2">向量搜尋</h3>
+            <h3 className="font-semibold mb-2">AI摘要搜尋</h3>
             <p className="text-sm leading-6 text-gray-600">
-              基於語意相似性的智能搜尋，找到最相關的知識內容。
+              基於AI智能摘要的生成去搜尋，找到最相關的知識內容。
             </p>
           </div>
 
