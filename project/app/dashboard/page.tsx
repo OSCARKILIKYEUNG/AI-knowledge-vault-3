@@ -131,7 +131,7 @@ export default function DashboardPage() {
     setViewItems(applyCategoryFilter(base));
   }
 
-  /** 搜尋內容：僅 raw_content */
+  /** ：僅 raw_content */
   function handleSearchContent() {
     const q = searchQuery.trim().toLowerCase();
     if (!q) {
@@ -263,7 +263,7 @@ export default function DashboardPage() {
                 <SearchIcon className="h-4 w-4 mr-1" />
                 搜尋主題
               </Button>
-              <Button variant="outline" onClick={handleSearchContent} title="只在內容中比對關鍵字">
+              <Button variant="secondary" onClick={handleSearchContent} title="只在內容中比對關鍵字">
                 <SearchIcon className="h-4 w-4 mr-1" />
                 搜尋內容
               </Button>
