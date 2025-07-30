@@ -261,7 +261,7 @@ export default function DashboardPage() {
             </Button>
 
             <Button
-              className="flex-none whitespace-nowrap"
+              className="bg-black text-white hover:bg-black/90"
               variant="secondary"
               onClick={handleSearchContent}
               title="只在內容中比對關鍵字"
