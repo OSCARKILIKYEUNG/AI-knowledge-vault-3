@@ -23,7 +23,7 @@ import {
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
 
-// 資料型別
+/* ---------- 型別 ---------- */
 type ItemWithAssets = {
   id: number;
   user_id: string;
@@ -31,16 +31,18 @@ type ItemWithAssets = {
   title: string | null;
   raw_content: string | null;
   url: string | null;
-  summary: string | null;        // 長摘要（選用）
-  summary_tip?: string | null;   // 30 字內提示
+  summary: string | null;
+  summary_tip?: string | null;
   category: string[] | null;
   created_at: string;
   prompt_assets?: { image_url: string | null }[];
 };
 
+/* ---------- 元件 ---------- */
 export default function DashboardPage() {
   const router = useRouter();
 
+  /* ---------- state ---------- */
   const [user, setUser] = useState<any>(null);
   const [items, setItems] = useState<ItemWithAssets[]>([]);
   const [viewItems, setViewItems] = useState<ItemWithAssets[]>([]);
@@ -56,6 +58,7 @@ export default function DashboardPage() {
 
   const booted = useRef(false);
 
+  /* ---------- 開機流程 ---------- */
   useEffect(() => {
     if (booted.current) return;
     booted.current = true;
@@ -80,6 +83,7 @@ export default function DashboardPage() {
     return () => subscription.unsubscribe();
   }, [router]);
 
+  /* ---------- 讀資料 ---------- */
   async function fetchItems() {
     try {
       const { data, error } = await supabase
@@ -104,12 +108,13 @@ export default function DashboardPage() {
     }
   }
 
+  /* ---------- 工具 ---------- */
   function applyCategoryFilter(list: ItemWithAssets[]) {
     if (!selectedCategory) return list;
     return list.filter((it) => it.category?.includes(selectedCategory));
   }
 
-  // 只搜尋標題（按鈕時才觸發）
+  // 只搜尋標題
   function handleKeywordSearch() {
     const q = searchQuery.trim().toLowerCase();
     if (!q) {
@@ -120,7 +125,7 @@ export default function DashboardPage() {
     setViewItems(applyCategoryFilter(base));
   }
 
-  // 只搜尋內容（按鈕時才觸發）
+  // 只搜尋內容
   function handleSearchContent() {
     const q = searchQuery.trim().toLowerCase();
     if (!q) {
@@ -131,7 +136,7 @@ export default function DashboardPage() {
     setViewItems(applyCategoryFilter(base));
   }
 
-  // AI 提示搜尋（後端 /api/ai-search，基於 summary_tip）
+  // AI 摘要搜尋
   async function runAISearch() {
     const q = searchQuery.trim();
     if (!q) {
@@ -174,7 +179,7 @@ export default function DashboardPage() {
     }
   }
 
-  // 重算 30 字提示（會納入最新圖片/文字）
+  // 重新計算 30 字提示
   async function makeTip(itemId: number) {
     try {
       setSummarizingId(itemId);
@@ -195,17 +200,20 @@ export default function DashboardPage() {
     }
   }
 
+  // 內容預覽
   function snippet(text: string | null, n = 40) {
     const t = (text ?? '').trim();
     if (!t) return '';
     return t.length <= n ? t : `${t.slice(0, n)}…`;
   }
 
+  /* ---------- 登出 ---------- */
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push('/');
   }
 
+  /* ---------- 載入畫面 ---------- */
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -217,9 +225,10 @@ export default function DashboardPage() {
     );
   }
 
+  /* ---------- 畫面 ---------- */
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
+      {/* ---------- Header ---------- */}
       <header className="bg-white border-b">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center space-x-2">
@@ -239,9 +248,10 @@ export default function DashboardPage() {
       </header>
 
       <div className="container mx-auto px-4 py-8">
-        {/* 搜尋列：同一行，可左右滑動 */}
+        {/* ---------- 搜尋列 ---------- */}
         <div className="mb-8 space-y-4">
           <div className="flex items-center gap-2 flex-nowrap overflow-x-auto py-1 -mx-4 px-4">
+            {/* 輸入框 */}
             <div className="relative flex-none min-w-[260px] sm:min-w-[360px]">
               <SearchIcon className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
               <Input
@@ -253,14 +263,15 @@ export default function DashboardPage() {
               />
             </div>
 
+            {/* 按鈕們 */}
             <Button className="flex-none whitespace-nowrap" onClick={handleKeywordSearch} title="只在標題中比對關鍵字">
               <SearchIcon className="h-4 w-4 mr-1" />
               搜尋主題
             </Button>
 
+            {/* ❗ 黑底白字版本 */}
             <Button
-              className="flex-none whitespace-nowrap"
-              variant="secondary"
+              className="flex-none whitespace-nowrap bg-black text-white hover:bg-black/80"
               onClick={handleSearchContent}
               title="只在內容中比對關鍵字"
             >
@@ -284,6 +295,7 @@ export default function DashboardPage() {
             </Button>
           </div>
 
+          {/* 分類過濾 */}
           {categories.length > 0 && (
             <div className="flex flex-wrap gap-2">
               <Button
@@ -313,7 +325,7 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Items Grid */}
+        {/* ---------- Grid ---------- */}
         {viewItems.length === 0 ? (
           <div className="text-center py-12">
             <Brain className="h-16 w-16 text-gray-300 mx-auto mb-4" />
@@ -338,7 +350,7 @@ export default function DashboardPage() {
               <Link key={item.id} href={`/items/${item.id}`}>
                 <Card className="h-full hover:shadow-lg transition-shadow cursor-pointer">
                   <CardHeader>
-                    {/* 首張圖片 */}
+                    {/* 圖 */}
                     {item.prompt_assets?.[0]?.image_url && (
                       <div className="mb-3">
                         <img
@@ -350,6 +362,7 @@ export default function DashboardPage() {
                       </div>
                     )}
 
+                    {/* 標籤 & 產生提示 */}
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-2">
                         {item.type === 'prompt' ? (
@@ -362,7 +375,6 @@ export default function DashboardPage() {
                         </Badge>
                       </div>
 
-                      {/* 產生/重算 提示（阻止 Link 跳頁） */}
                       <Button
                         variant="outline"
                         size="sm"
@@ -378,22 +390,23 @@ export default function DashboardPage() {
                       </Button>
                     </div>
 
+                    {/* 標題 */}
                     <CardTitle className="text-lg leading-tight mt-2" title={item.title ?? ''}>
                       {item.title || '（無標題）'}
                     </CardTitle>
 
-                    {/* 內容預覽：至少一行（40字左右），卡片上截斷 */}
+                    {/* 內容預覽 */}
                     {(item.raw_content ?? '').trim() && (
                       <CardDescription className="text-sm" title={item.raw_content ?? ''}>
                         {snippet(item.raw_content, 40)}
                       </CardDescription>
                     )}
 
-                    {/* 30字 AI 提示（單行 + 省略號；hover 可看完整） */}
+                    {/* 30 字提示：單行 + … */}
                     {(item.summary_tip ?? '').trim() && (
                       <p
                         className="text-sm text-blue-700 mt-1 truncate"
-                        title={item.summary_tip ?? ''}   // hover 顯示完整
+                        title={item.summary_tip ?? ''}
                       >
                         {item.summary_tip}
                       </p>
@@ -426,6 +439,7 @@ export default function DashboardPage() {
         )}
       </div>
 
+      {/* 新增項目 Modal */}
       <AddItemModal
         open={showAddModal}
         onOpenChange={setShowAddModal}
