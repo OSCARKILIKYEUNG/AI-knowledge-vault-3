@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
@@ -35,6 +35,7 @@ type AssetRow = {
   storage_path: string | null;
 };
 
+// 去掉內容開頭多餘的「提示：」「摘要：」等標籤，前端再自行加上「提示：」
 function stripTipLabel(s: string | null | undefined) {
   if (!s) return '';
   return s.replace(/^\s*(提示|重點提示|摘要|重點摘要)\s*[:：]\s*/i, '').trim();
@@ -59,7 +60,6 @@ export default function ItemDetailPage() {
   const [newFiles, setNewFiles] = useState<FileList | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // 初始化與載入
   useEffect(() => {
     if (!itemId || Number.isNaN(itemId)) {
       toast.error('無效的項目 ID');
@@ -84,13 +84,11 @@ export default function ItemDetailPage() {
       }
       setItem(data);
 
-      // 載入圖片
       const { data: ps, error: pe } = await supabase
         .from('prompt_assets')
         .select('id,item_id,image_url,storage_path')
         .eq('item_id', itemId)
         .order('id', { ascending: true });
-
       if (!pe) setAssets(ps || []);
 
       // 預填編輯欄位
@@ -110,12 +108,6 @@ export default function ItemDetailPage() {
   const copyContent = async () => {
     await navigator.clipboard.writeText(item?.raw_content || '');
     toast.success('內容已複製');
-  };
-  const copySummary = async () => {
-    if (item?.summary) {
-      await navigator.clipboard.writeText(item.summary);
-      toast.success('摘要已複製');
-    }
   };
 
   // 刪除整個項目
@@ -225,7 +217,6 @@ export default function ItemDetailPage() {
     if (!item) return;
     try {
       setSaving(true);
-      // 更新 items
       const categories = categoryInput
         .split(',')
         .map((c) => c.trim())
@@ -242,7 +233,6 @@ export default function ItemDetailPage() {
         .eq('id', item.id);
       if (upErr) throw upErr;
 
-      // 上傳新選的圖片
       if (newFiles && newFiles.length > 0) {
         await uploadNewImages();
       }
@@ -269,23 +259,6 @@ export default function ItemDetailPage() {
       const json = await res.json();
       if (!res.ok || !json.ok) throw new Error(json.error || '重算失敗');
       toast.success('AI 提示已更新');
-      await reloadItem();
-    } catch (e: any) {
-      toast.error(e?.message ?? '重算失敗');
-    }
-  }
-
-  // 重算長摘要（多模態）
-  async function recomputeLongSummary() {
-    try {
-      const res = await fetch('/api/process-item', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ itemId }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || '重算失敗');
-      toast.success('AI 長摘要已更新');
       await reloadItem();
     } catch (e: any) {
       toast.error(e?.message ?? '重算失敗');
@@ -366,7 +339,7 @@ export default function ItemDetailPage() {
                 <CardTitle className="text-xl">{item.title || '（無標題）'}</CardTitle>
                 <p className="text-sm text-gray-500 mt-1">建立於：{formatDate(item.created_at)}</p>
 
-                {/* 單行提示（完整顯示，不截斷；避免「提示」重複） */}
+                {/* 只顯示「提示」（完整呈現 + 自動換行），前綴「提示：」由前端加上 */}
                 {tipText && (
                   <p className="mt-2 text-sm text-blue-700 bg-blue-50 inline-block px-2 py-1 rounded whitespace-pre-wrap break-words">
                     <strong>提示：</strong>{tipText}
@@ -374,7 +347,7 @@ export default function ItemDetailPage() {
                 )}
               </>
             ) : (
-              // 編輯模式：基本欄位
+              // 編輯模式
               <div className="space-y-3 mt-2">
                 <div>
                   <label className="text-sm text-gray-600">標題</label>
@@ -421,16 +394,11 @@ export default function ItemDetailPage() {
             <div>
               <div className="flex items-center justify-between">
                 <h3 className="font-medium mb-2">圖片</h3>
-                {/* 重新計算摘要按鈕（納入圖片變動） */}
                 {!editing && (
                   <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={recomputeTip} title="重算 30 字提示">
+                    <Button variant="outline" size="sm" onClick={recomputeTip} title="重算提示">
                       <Sparkles className="h-4 w-4 mr-1" />
                       重算提示
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={recomputeLongSummary} title="重算長摘要">
-                      <Sparkles className="h-4 w-4 mr-1" />
-                      重算摘要
                     </Button>
                   </div>
                 )}
@@ -492,22 +460,6 @@ export default function ItemDetailPage() {
                   <Button variant="outline" onClick={copyContent}>
                     <Copy className="h-4 w-4 mr-2" />
                     複製內容
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* 長摘要（完整顯示） */}
-            {!editing && (item.summary ?? '').trim() && (
-              <div>
-                <h3 className="font-medium mb-2">AI 摘要</h3>
-                <pre className="whitespace-pre-wrap bg-blue-50 p-3 rounded text-sm break-words">
-                  {item.summary as string}
-                </pre>
-                <div className="mt-2">
-                  <Button variant="outline" onClick={copySummary}>
-                    <Copy className="h-4 w-4 mr-2" />
-                    複製摘要
                   </Button>
                 </div>
               </div>
