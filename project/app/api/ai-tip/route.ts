@@ -2,174 +2,193 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl   = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const serviceKey    = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const openrouterKey = process.env.OPENROUTER_API_KEY!;
-const visionModel   = process.env.OPENROUTER_VISION_MODEL || 'openai/gpt-4o';
-
-const sb = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 export const dynamic = 'force-dynamic';
 
-// 清洗：移除 URL / Markdown 連結或圖片語法，壓縮空白
-function sanitizeTip(raw: string): string {
-  if (!raw) return '';
-  let s = raw;
-  // ![alt](url) / [text](url)
-  s = s.replace(/!\[[^\]]*\]\([^)]+\)/g, '');
-  s = s.replace(/\[[^\]]*\]\([^)]+\)/g, '');
-  // 裸 URL
-  s = s.replace(/https?:\/\/\S+/gi, '');
-  // 移除多餘括號
-  s = s.replace(/[()<>]/g, '');
-  // 收斂空白
-  s = s.replace(/\s+/g, ' ').trim();
-  return s;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const openrouterKey = process.env.OPENROUTER_API_KEY!;
+
+// 伺服器端 Supabase（可繞 RLS）
+const supabaseAdmin = createClient(supabaseUrl, serviceKey);
+
+// 小工具：清理模型輸出（移除 URL、Markdown、壓縮空白）
+function cleanText(s: string): string {
+  let t = s ?? '';
+  // 移除 markdown link / image
+  t = t.replace(/!\[[^\]]*\]\([^)]+\)/g, '');
+  t = t.replace(/\[[^\]]*\]\([^)]+\)/g, '');
+  // 移除 http/https 連結
+  t = t.replace(/https?:\/\/\S+/g, '');
+  // 壓縮多餘空白
+  t = t.replace(/[ \t]+/g, ' ');
+  t = t.replace(/\s*\n\s*/g, ' ').trim();
+  return t;
+}
+
+// 取前 n 個中文字（保守用字元數控制，避免過長）
+function clip(s: string, n: number) {
+  if (!s) return '';
+  return s.length <= n ? s : s.slice(0, n);
 }
 
 export async function POST(req: Request) {
   try {
-    const { itemId } = await req.json();
-    const id = Number(itemId);
-    if (!id || Number.isNaN(id)) {
-      return NextResponse.json({ ok: false, error: 'missing itemId' }, { status: 400 });
-    }
     if (!openrouterKey) {
       return NextResponse.json({ ok: false, error: 'missing OPENROUTER_API_KEY' }, { status: 500 });
     }
 
-    // 撈 item + 圖片
-    const { data: item, error } = await sb
+    const body = await req.json().catch(() => ({}));
+    const rawId = body?.itemId;
+    const itemId = Number(rawId);
+    if (!itemId || Number.isNaN(itemId)) {
+      return NextResponse.json({ ok: false, error: 'missing itemId' }, { status: 400 });
+    }
+
+    // 把 items 與 prompt_assets 讀出來
+    const { data: item, error: itemErr } = await supabaseAdmin
       .from('items')
-      .select(`
-        id, title, raw_content, url,
-        prompt_assets(image_url, storage_path)
-      `)
-      .eq('id', id)
+      .select('id, title, raw_content, url, category, summary_tip, prompt_assets(image_url)')
+      .eq('id', itemId)
       .single();
 
-    if (error || !item) {
-      return NextResponse.json({ ok: false, error: 'item not found' }, { status: 404 });
+    if (itemErr || !item) {
+      return NextResponse.json({ ok: false, error: 'missing item' }, { status: 404 });
     }
 
-    const title   = (item.title ?? '').trim();
-    const content = (item.raw_content ?? '').trim();
-    const link    = (item.url ?? '').trim();
+    const title: string = item.title ?? '';
+    const content: string = item.raw_content ?? '';
+    const imgs: string[] =
+      (item as any)?.prompt_assets?.map((a: any) => a?.image_url).filter(Boolean).slice(0, 3) ?? [];
 
-    const assets = (item as any).prompt_assets ?? [];
-    // 取最多 3~5 張可公開訪問的圖片 URL
-    const imageUrls: string[] = assets
-      .map((a: any) => a?.image_url)
-      .filter((u: any) => typeof u === 'string' && /^https?:\/\//i.test(u))
-      .slice(0, 4);
+    const hasText = Boolean((title && title.trim()) || (content && content.trim()));
+    const hasImages = imgs.length > 0;
 
-    const imageCount = imageUrls.length;
-    const hasText    = (title + content + link).length > 0;
-    const hasImages  = imageCount > 0;
+    // 建立多模態 messages
+    // 使用 OpenAI/Chat 格式：content 是 array，可混合 text + image_url
+    const systemText =
+      '你是專業的繁體中文助理。輸出純文字（不可含連結或 Markdown），總長度精簡，必須依照下述「輸出格式規則」。';
 
-    // ===== Prompt 規則（系統訊息）=====
-    const system =
-      '你是中文助手。請輸出繁體中文、單句、≤30 字的極簡摘要。' +
-      '禁止輸出任何網址、禁止使用 Markdown 連結或圖片語法（例如 []() 或 ![]() ）。' +
-      '若有圖片且亦有文字，請以文字重點為主，僅以「（附圖）」輕描淡寫提及，不要胡亂猜測圖像細節。' +
-      '若只有圖片，僅做非常概括描述或以「附圖」帶過。';
-
-    // ===== 使用多模態 content（OpenAI 風格）=====
-    // content 是一個 array：可混合 text 與 image_url
-    const contentParts: any[] = [];
-
-    // 規則文字（根據三情境）
+    // 根據三種情境給不同的「明確格式規則」
+    let formatRule = '';
     if (hasImages && hasText) {
-      // 情境 1：有圖 + 有文字 -> 文字為主、提及附圖
-      const textBlock =
-        [
-          title ? `標題：${title}` : '',
-          content ? `內容重點（節錄）：${content.slice(0, 600)}` : '',
-          link ? `原始連結（僅供語意，不得輸出）：${link}` : '',
-          `共有 ${imageCount} 張圖片已附上（模型可視圖判斷，但勿加入 URL）。`,
-          '請以文字為主簡明總結；必要時以「（附圖）」收尾。'
-        ].filter(Boolean).join('\n');
-      contentParts.push({ type: 'text', text: textBlock });
-
-      // 加入圖片
-      for (const url of imageUrls) {
-        contentParts.push({
-          type: 'image_url',
-          image_url: { url, detail: 'low' } // 用低細節以控制輸出簡短
-        });
-      }
+      formatRule =
+        '輸出格式：\n' +
+        '提示：<用 30~60 字描述標題/內容重點>。[圖片]：<用 8~20 字描述圖片關鍵畫面>\n' +
+        '禁止使用 Markdown、禁止輸出任何連結或 URL。';
     } else if (!hasImages && hasText) {
-      // 情境 2：只有文字
-      const textBlock =
-        [
-          title ? `標題：${title}` : '',
-          content ? `內容重點（節錄）：${content.slice(0, 600)}` : '',
-          link ? `原始連結（僅供語意，不得輸出）：${link}` : '',
-          '請僅根據上述文字輸出單句 ≤30 字摘要；不得輸出 URL 或 Markdown。'
-        ].filter(Boolean).join('\n');
-      contentParts.push({ type: 'text', text: textBlock });
+      formatRule =
+        '輸出格式：\n' +
+        '提示：<用 30~60 字描述標題/內容重點>\n' +
+        '禁止使用 Markdown、禁止輸出任何連結或 URL。';
     } else {
-      // 情境 3：只有圖片
-      const textBlock =
-        [
-          `只有圖片（${imageCount} 張），無標題與內容。`,
-          '請僅根據圖片做非常概括的描述；若不確定，僅以「附圖」帶過。',
-          '輸出繁中單句 ≤30 字；不得輸出 URL 或 Markdown。'
-        ].join('\n');
-      contentParts.push({ type: 'text', text: textBlock });
-      for (const url of imageUrls) {
-        contentParts.push({
-          type: 'image_url',
-          image_url: { url, detail: 'low' }
-        });
-      }
+      // 只有圖片
+      formatRule =
+        '輸出格式：\n' +
+        '[圖片]：<用 10~20 字描述圖片關鍵畫面>（建議補標題或內容以更精準）\n' +
+        '禁止使用 Markdown、禁止輸出任何連結或 URL。';
     }
 
-    // 呼叫 OpenRouter
-    const orRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    // 準備 user 內容
+    const textLines: string[] = [];
+    if (title) textLines.push(`標題：${clip(title, 200)}`);
+    if (content) textLines.push(`內容：${clip(content, 800)}`);
+    // url 與 category 不直接給，避免模型想貼連結
+
+    // 多模態 content（先輸入文字，再附圖）
+    const userContent: Array<any> = [];
+    const joinedText = textLines.join('\n').trim();
+    if (joinedText) {
+      userContent.push({ type: 'text', text: joinedText });
+    }
+    if (hasImages) {
+      imgs.forEach((u) => userContent.push({ type: 'image_url', image_url: { url: u } }));
+    }
+
+    // 呼叫 OpenRouter（gpt-4o，支援 vision）
+    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${openrouterKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: visionModel, // 預設 openai/gpt-4o；可用 env 覆蓋
+        model: 'openai/gpt-4o',
         messages: [
-          { role: 'system', content: system },
-          { role: 'user',   content: contentParts },
+          { role: 'system', content: systemText + '\n' + formatRule },
+          { role: 'user', content: userContent },
         ],
-        max_tokens: 80,
         temperature: 0.2,
+        max_tokens: 160,
       }),
     });
 
-    if (!orRes.ok) {
-      const t = await orRes.text().catch(() => '');
-      return NextResponse.json({ ok: false, error: `openrouter_failed: ${t}` }, { status: 502 });
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      const msg = data?.error?.message || JSON.stringify(data);
+      return NextResponse.json({ ok: false, error: `openrouter_failed: ${msg}` }, { status: 502 });
     }
 
-    const orJson = await orRes.json();
+    // 擷取與清理
     let tip: string =
-      orJson?.choices?.[0]?.message?.content?.trim?.() ||
-      orJson?.choices?.[0]?.text?.trim?.() ||
+      data?.choices?.[0]?.message?.content?.trim?.() ||
+      data?.choices?.[0]?.text?.trim?.() ||
       '';
+    tip = cleanText(tip);
 
-    // 後處理：清洗 + 截斷（60 字元 ≈ 30 中文）
-    tip = sanitizeTip(tip);
-    if (tip.length > 60) tip = tip.slice(0, 60);
-
-    // 更新 DB
-    const { error: upErr } = await sb.from('items').update({ summary_tip: tip }).eq('id', id);
-    if (upErr) {
-      return NextResponse.json({ ok: false, error: upErr.message }, { status: 500 });
+    // 保險：若模型沒照格式，這裡做最低限度修正
+    if (hasImages && hasText) {
+      // 若沒包含「提示：」或「[圖片]：」，簡單補齊
+      if (!/提示：/.test(tip)) {
+        const textPart = clip(joinedText || '（無文字）', 60);
+        tip = `提示：${textPart}。[圖片]：圖片展示重點場景`;
+      }
+      if (!/\[圖片]：/.test(tip)) {
+        tip = tip.replace(/。?$/, '。') + '[圖片]：圖片展示重點場景';
+      }
+    } else if (!hasImages && hasText) {
+      if (!/提示：/.test(tip)) {
+        const textPart = clip(joinedText || '（無文字）', 60);
+        tip = `提示：${textPart}`;
+      }
+      // 移除任何莫名的圖片段
+      tip = tip.replace(/\[圖片]：.*$/, '').trim();
+    } else {
+      // 只有圖片
+      if (!/\[圖片]：/.test(tip)) {
+        tip = `[圖片]：圖片展示重點場景（建議補標題或內容以更精準）`;
+      }
+      // 只保留圖片段
+      tip = tip.replace(/提示：.*?(?=\[圖片]：|$)/, '').trim();
     }
 
-    // 僅圖片時，回傳友善提示（前端可 toast）
-    const clientHint = (!hasText && hasImages)
-      ? '僅以圖片產生摘要；建議補 1～2 個關鍵字可更準確。'
+    // 最後再做一次清理與長度保險
+    tip = cleanText(tip);
+    tip = clip(tip, 140); // 約限制 140 字內（卡片會截斷，詳情頁顯示完整）
+
+    // 寫回 DB
+    const { error: upErr } = await supabaseAdmin
+      .from('items')
+      .update({ summary_tip: tip })
+      .eq('id', itemId);
+
+    if (upErr) {
+      return NextResponse.json(
+        { ok: false, error: `db_update_failed: ${upErr.message}` },
+        { status: 500 }
+      );
+    }
+
+    // 附帶友善訊息：若只有圖片，提示使用者可補文
+    const message = !hasText && hasImages
+      ? '僅以圖片產生摘要；建議之後補標題或內容可更精準。'
       : undefined;
 
-    return NextResponse.json({ ok: true, tip, message: clientHint });
+    return NextResponse.json({ ok: true, tip, message });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || 'unknown_error' }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message ?? 'unknown_error' },
+      { status: 500 }
+    );
   }
 }
